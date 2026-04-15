@@ -1,5 +1,7 @@
 mod app;
+mod desktop;
 mod input;
+mod launcher;
 mod terminal;
 
 use std::io;

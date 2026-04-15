@@ -1,31 +1,28 @@
 use ratatui::prelude::*;
 
+use crate::launcher::Launcher;
+
 pub struct App {
     pub running: bool,
+    launcher: Launcher,
 }
 
 impl App {
     pub fn new() -> Self {
-        Self { running: true }
+        let launcher = Launcher::new();
+        let running = launcher.running;
+        Self { running, launcher }
     }
 
     pub fn handle_event(&mut self, event: &crossterm::event::Event) {
-        if crate::input::is_escape(event) {
-            self.running = false;
-        }
+        self.launcher.handle_event(event);
+        self.running = self.launcher.running;
     }
 }
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let banner = Line::from(vec![
-            Span::styled(
-                "Burst",
-                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" - Press Escape to exit"),
-        ]);
-        banner.render(area, buf);
+        self.launcher.render(area, buf);
     }
 }
 
@@ -61,12 +58,11 @@ mod tests {
     fn other_keys_keep_app_running() {
         let mut app = App::new();
         for code in [
-            KeyCode::Enter,
             KeyCode::Tab,
             KeyCode::Char('a'),
             KeyCode::Char('q'),
-            KeyCode::Up,
-            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
         ] {
             app.running = true;
             let event = make_key_event(code);

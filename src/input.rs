@@ -21,6 +21,27 @@ pub fn is_escape(event: &Event) -> bool {
     )
 }
 
+pub fn is_up(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.code == KeyCode::Up
+    )
+}
+
+pub fn is_down(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.code == KeyCode::Down
+    )
+}
+
+pub fn is_enter(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.code == KeyCode::Enter
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +76,64 @@ mod tests {
         ] {
             let event = make_key_event(code);
             assert!(!is_escape(&event), "{:?} should not be escape", code);
+        }
+    }
+
+    #[test]
+    fn is_up_detects_up_arrow() {
+        let event = make_key_event(KeyCode::Up);
+        assert!(is_up(&event));
+    }
+
+    #[test]
+    fn is_up_rejects_other_keys() {
+        for code in [
+            KeyCode::Esc,
+            KeyCode::Enter,
+            KeyCode::Down,
+            KeyCode::Char('a'),
+        ] {
+            let event = make_key_event(code);
+            assert!(!is_up(&event), "{:?} should not be up", code);
+        }
+    }
+
+    #[test]
+    fn is_down_detects_down_arrow() {
+        let event = make_key_event(KeyCode::Down);
+        assert!(is_down(&event));
+    }
+
+    #[test]
+    fn is_down_rejects_other_keys() {
+        for code in [
+            KeyCode::Esc,
+            KeyCode::Enter,
+            KeyCode::Up,
+            KeyCode::Char('a'),
+        ] {
+            let event = make_key_event(code);
+            assert!(!is_down(&event), "{:?} should not be down", code);
+        }
+    }
+
+    #[test]
+    fn is_enter_detects_enter() {
+        let event = make_key_event(KeyCode::Enter);
+        assert!(is_enter(&event));
+    }
+
+    #[test]
+    fn is_enter_rejects_other_keys() {
+        for code in [
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Char('a'),
+        ] {
+            let event = make_key_event(code);
+            assert!(!is_enter(&event), "{:?} should not be enter", code);
         }
     }
 }
