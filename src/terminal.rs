@@ -2,7 +2,7 @@ use std::io::{self, stdout};
 
 use crossterm::{
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::prelude::*;
 
@@ -31,13 +31,13 @@ mod tests {
 
     #[test]
     fn restore_does_not_panic() {
-        let result = panic::catch_unwind(|| restore());
+        let result = panic::catch_unwind(restore);
         assert!(result.is_ok(), "restore() should not panic");
     }
 
     #[test]
     fn restore_on_panic_does_not_panic() {
-        let result = panic::catch_unwind(|| restore_on_panic());
+        let result = panic::catch_unwind(restore_on_panic);
         assert!(result.is_ok(), "restore_on_panic() should not panic");
     }
 
