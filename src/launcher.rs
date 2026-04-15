@@ -3,9 +3,12 @@ use std::process::Command;
 use ratatui::prelude::*;
 
 use crate::desktop::{DesktopEntry, discover_apps};
+use crate::search::filter_and_rank;
 
 pub struct Launcher {
     pub apps: Vec<DesktopEntry>,
+    pub query: String,
+    pub filtered: Vec<(usize, u32)>,
     pub selected_index: usize,
     pub running: bool,
 }
@@ -14,43 +17,118 @@ impl Launcher {
     pub fn new() -> Self {
         let apps = discover_apps();
         let running = !apps.is_empty();
+        let filtered: Vec<_> = apps.iter().enumerate().map(|(i, _)| (i, 0u32)).collect();
         Self {
             apps,
+            query: String::new(),
+            filtered,
             selected_index: 0,
             running,
         }
     }
 
     pub fn handle_event(&mut self, event: &crossterm::event::Event) {
-        if self.apps.is_empty() {
-            if crate::input::is_escape(event) {
-                self.running = false;
-            }
+        if !self.running {
             return;
         }
 
         if crate::input::is_escape(event) {
             self.running = false;
-        } else if crate::input::is_up(event) {
+            return;
+        }
+
+        if crate::input::is_tab(event) {
+            self.autocomplete();
+            return;
+        }
+
+        if crate::input::is_page_up(event) {
+            self.page_up();
+            return;
+        }
+
+        if crate::input::is_page_down(event) {
+            self.page_down();
+            return;
+        }
+
+        if crate::input::is_up(event) {
             if self.selected_index == 0 {
-                self.selected_index = self.apps.len() - 1;
+                self.selected_index = self.filtered.len().saturating_sub(1);
             } else {
-                self.selected_index -= 1;
+                self.selected_index = self.selected_index.saturating_sub(1);
             }
-        } else if crate::input::is_down(event) {
-            if self.selected_index == self.apps.len() - 1 {
+            return;
+        }
+
+        if crate::input::is_down(event) {
+            if self.selected_index + 1 >= self.filtered.len() {
                 self.selected_index = 0;
             } else {
                 self.selected_index += 1;
             }
-        } else if crate::input::is_enter(event) {
+            return;
+        }
+
+        if crate::input::is_enter(event) {
             self.launch_selected();
+            return;
+        }
+
+        if crate::input::is_backspace(event) {
+            self.query.pop();
+            self.rebuild_filtered();
+            return;
+        }
+
+        if let Some(c) = crate::input::char_from_event(event) {
+            self.query.push(c);
+            self.rebuild_filtered();
         }
     }
 
+    fn rebuild_filtered(&mut self) {
+        let ranked = filter_and_rank(&self.query, &self.apps);
+        self.filtered = ranked
+            .into_iter()
+            .map(|(app, score)| {
+                let idx = self.apps.iter().position(|a| std::ptr::eq(a, app)).unwrap();
+                (idx, score)
+            })
+            .collect();
+        self.selected_index = 0;
+    }
+
+    fn autocomplete(&mut self) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let (idx, _) = self.filtered[self.selected_index.min(self.filtered.len() - 1)];
+        let name = &self.apps[idx].name;
+        self.query = name.to_string();
+        self.rebuild_filtered();
+    }
+
+    fn page_up(&mut self) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let page_size = 10;
+        self.selected_index = self.selected_index.saturating_sub(page_size);
+    }
+
+    fn page_down(&mut self) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let page_size = 10;
+        self.selected_index = (self.selected_index + page_size).min(self.filtered.len() - 1);
+    }
+
     fn launch_selected(&mut self) {
-        if self.selected_index < self.apps.len() {
-            let exec = &self.apps[self.selected_index].exec;
+        if self.selected_index < self.filtered.len() {
+            let (idx, _) = self.filtered[self.selected_index];
+            let exec = &self.apps[idx].exec;
             if !exec.is_empty() {
                 let _ = Command::new("hyprctl")
                     .args(["dispatch", "exec", "--", exec])
@@ -63,21 +141,21 @@ impl Launcher {
 
 impl Widget for &mut Launcher {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if self.apps.is_empty() {
-            let msg = "No applications found";
-            let style = Style::new().fg(Color::Yellow);
-            buf.set_string(area.x, area.y, msg, style);
-            return;
-        }
+        let input_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        };
 
-        let title = Line::from(vec![
-            Span::styled(
-                "Burst",
-                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" - Arrow keys to navigate, Enter to launch, Esc to exit"),
-        ]);
-        title.render(area, buf);
+        let prompt = format!("> {}", self.query);
+        let input_style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        buf.set_string(input_area.x, input_area.y, &prompt, input_style);
+
+        let cursor_x = input_area.x + 2 + self.query.len() as u16;
+        if cursor_x < input_area.x + input_area.width {
+            buf.set_string(cursor_x, input_area.y, "█", Style::new().fg(Color::Cyan));
+        }
 
         let list_area = Rect {
             x: area.x,
@@ -86,7 +164,18 @@ impl Widget for &mut Launcher {
             height: area.height.saturating_sub(1),
         };
 
-        for (i, app) in self.apps.iter().enumerate() {
+        if self.filtered.is_empty() {
+            let msg = if self.query.is_empty() {
+                "No applications found"
+            } else {
+                "No matches"
+            };
+            let style = Style::new().fg(Color::Yellow);
+            buf.set_string(list_area.x, list_area.y, msg, style);
+            return;
+        }
+
+        for (i, &(idx, _score)) in self.filtered.iter().enumerate() {
             if i as u16 >= list_area.height {
                 break;
             }
@@ -99,7 +188,7 @@ impl Widget for &mut Launcher {
                 Style::new()
             };
 
-            let line = format!("{}{}", prefix, app.name);
+            let line = format!("{}{}", prefix, self.apps[idx].name);
             buf.set_string(list_area.x, y, &line, style);
         }
     }
@@ -138,6 +227,8 @@ mod tests {
                     exec: "app-c".into(),
                 },
             ],
+            query: String::new(),
+            filtered: vec![(0, 0), (1, 0), (2, 0)],
             selected_index: 0,
             running: true,
         }
@@ -195,9 +286,56 @@ mod tests {
     }
 
     #[test]
+    fn typing_filters_results() {
+        let mut launcher = make_launcher_with_apps();
+        let event = make_key_event(KeyCode::Char('a'));
+        launcher.handle_event(&event);
+        assert_eq!(launcher.query, "a");
+        assert!(!launcher.filtered.is_empty());
+    }
+
+    #[test]
+    fn backspace_removes_char() {
+        let mut launcher = make_launcher_with_apps();
+        launcher.query = "a".into();
+        let event = make_key_event(KeyCode::Backspace);
+        launcher.handle_event(&event);
+        assert_eq!(launcher.query, "");
+    }
+
+    #[test]
+    fn tab_autocompletes_top_match() {
+        let mut launcher = make_launcher_with_apps();
+        let event = make_key_event(KeyCode::Char('a'));
+        launcher.handle_event(&event);
+        let event = make_key_event(KeyCode::Tab);
+        launcher.handle_event(&event);
+        assert!(!launcher.query.is_empty());
+    }
+
+    #[test]
+    fn page_down_moves_selection_down() {
+        let mut launcher = make_launcher_with_apps();
+        let event = make_key_event(KeyCode::PageDown);
+        launcher.handle_event(&event);
+        assert_eq!(launcher.selected_index, 10.min(launcher.filtered.len() - 1));
+    }
+
+    #[test]
+    fn page_up_moves_selection_up() {
+        let mut launcher = make_launcher_with_apps();
+        launcher.selected_index = 15;
+        let event = make_key_event(KeyCode::PageUp);
+        launcher.handle_event(&event);
+        assert_eq!(launcher.selected_index, 5);
+    }
+
+    #[test]
     fn empty_apps_list_stops_on_escape() {
         let mut launcher = Launcher {
             apps: vec![],
+            query: String::new(),
+            filtered: vec![],
             selected_index: 0,
             running: true,
         };
@@ -207,14 +345,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_apps_list_ignores_navigation() {
-        let mut launcher = Launcher {
-            apps: vec![],
-            selected_index: 0,
-            running: true,
-        };
-        let event = make_key_event(KeyCode::Down);
+    fn search_rebuilds_filtered_on_typing() {
+        let mut launcher = make_launcher_with_apps();
+        let event = make_key_event(KeyCode::Char('A'));
         launcher.handle_event(&event);
-        assert!(launcher.running);
+        assert_eq!(launcher.query, "A");
+        assert!(launcher.selected_index == 0);
     }
 }

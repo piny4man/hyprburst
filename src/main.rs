@@ -2,6 +2,7 @@ mod app;
 mod desktop;
 mod input;
 mod launcher;
+mod search;
 mod terminal;
 
 use std::io;
