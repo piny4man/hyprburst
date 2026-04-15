@@ -42,6 +42,47 @@ pub fn is_enter(event: &Event) -> bool {
     )
 }
 
+pub fn is_tab(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.code == KeyCode::Tab
+    )
+}
+
+pub fn is_page_up(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.code == KeyCode::PageUp
+    )
+}
+
+pub fn is_page_down(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.code == KeyCode::PageDown
+    )
+}
+
+pub fn is_backspace(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(key) if key.code == KeyCode::Backspace
+    )
+}
+
+pub fn char_from_event(event: &Event) -> Option<char> {
+    match event {
+        Event::Key(key) if matches!(key.code, KeyCode::Char(_)) => {
+            if let KeyCode::Char(c) = key.code {
+                Some(c)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,6 +175,54 @@ mod tests {
         ] {
             let event = make_key_event(code);
             assert!(!is_enter(&event), "{:?} should not be enter", code);
+        }
+    }
+
+    #[test]
+    fn is_tab_detects_tab() {
+        let event = make_key_event(KeyCode::Tab);
+        assert!(is_tab(&event));
+    }
+
+    #[test]
+    fn is_page_up_detects_page_up() {
+        let event = make_key_event(KeyCode::PageUp);
+        assert!(is_page_up(&event));
+    }
+
+    #[test]
+    fn is_page_down_detects_page_down() {
+        let event = make_key_event(KeyCode::PageDown);
+        assert!(is_page_down(&event));
+    }
+
+    #[test]
+    fn is_backspace_detects_backspace() {
+        let event = make_key_event(KeyCode::Backspace);
+        assert!(is_backspace(&event));
+    }
+
+    #[test]
+    fn char_from_event_returns_char() {
+        let event = make_key_event(KeyCode::Char('a'));
+        assert_eq!(char_from_event(&event), Some('a'));
+    }
+
+    #[test]
+    fn char_from_event_returns_none_for_non_char() {
+        for code in [
+            KeyCode::Esc,
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::Up,
+            KeyCode::Down,
+        ] {
+            let event = make_key_event(code);
+            assert!(
+                char_from_event(&event).is_none(),
+                "{:?} should not produce a char",
+                code
+            );
         }
     }
 }
