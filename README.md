@@ -92,6 +92,9 @@ cp config.example.toml ~/.config/burst/config.toml
 | `colors.prompt` | color | `cyan` | Prompt + cursor color. |
 | `colors.selected` | color | `yellow` | Highlighted entry in the result list. |
 | `colors.empty` | color | `yellow` | "No matches" message color. |
+| `window.fullscreen` | bool | `true` | Render burst fullscreen. Set to `false` to use `width`/`height`. |
+| `window.width` | integer | _unset_ | Optional window width in pixels (used when `fullscreen = false`). |
+| `window.height` | integer | _unset_ | Optional window height in pixels (used when `fullscreen = false`). |
 
 ### Color values
 
@@ -112,7 +115,7 @@ selected = "light-cyan"
 
 ### Validation
 
-Unknown top-level keys, unknown `[colors]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, and `page_size = 0` are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
+Unknown top-level keys, unknown `[colors]` or `[window]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, `page_size = 0`, and type mismatches (e.g. `width = "big"`) are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
 
 ## History Schema
 

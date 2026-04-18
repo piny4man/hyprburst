@@ -20,6 +20,7 @@ pub struct Config {
     pub prompt: String,
     pub page_size: usize,
     pub colors: Colors,
+    pub window: Window,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +31,13 @@ pub struct Colors {
     pub empty: Color,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Window {
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub fullscreen: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -37,6 +45,17 @@ impl Default for Config {
             prompt: DEFAULT_PROMPT.to_string(),
             page_size: DEFAULT_PAGE_SIZE,
             colors: Colors::default(),
+            window: Window::default(),
+        }
+    }
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Self {
+            width: None,
+            height: None,
+            fullscreen: true,
         }
     }
 }
@@ -119,6 +138,7 @@ struct RawConfig {
     prompt: Option<String>,
     page_size: Option<usize>,
     colors: RawColors,
+    window: RawWindow,
 }
 
 #[derive(Default, Deserialize)]
@@ -128,6 +148,14 @@ struct RawColors {
     prompt: Option<String>,
     selected: Option<String>,
     empty: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawWindow {
+    width: Option<u32>,
+    height: Option<u32>,
+    fullscreen: Option<bool>,
 }
 
 impl RawConfig {
@@ -155,6 +183,11 @@ impl RawConfig {
                     defaults.colors.selected,
                 )?,
                 empty: resolve_color(self.colors.empty, "colors.empty", defaults.colors.empty)?,
+            },
+            window: Window {
+                width: self.window.width,
+                height: self.window.height,
+                fullscreen: self.window.fullscreen.unwrap_or(defaults.window.fullscreen),
             },
         })
     }
@@ -404,6 +437,53 @@ empty = "#fff"
     fn unknown_color_field_rejected() {
         let toml = r#"[colors]
 sparkle = "red""#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn window_defaults_to_fullscreen_when_section_missing() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert!(cfg.window.fullscreen);
+        assert_eq!(cfg.window.width, None);
+        assert_eq!(cfg.window.height, None);
+    }
+
+    #[test]
+    fn window_explicit_size_is_parsed() {
+        let toml = r#"[window]
+width = 1280
+height = 720
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.window.width, Some(1280));
+        assert_eq!(cfg.window.height, Some(720));
+        assert!(cfg.window.fullscreen);
+    }
+
+    #[test]
+    fn window_fullscreen_false_is_honored() {
+        let toml = r#"[window]
+fullscreen = false
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert!(!cfg.window.fullscreen);
+    }
+
+    #[test]
+    fn window_unknown_key_rejected() {
+        let toml = r#"[window]
+resizable = true
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn window_type_mismatch_rejected() {
+        let toml = r#"[window]
+width = "big"
+"#;
         let err = Config::from_toml_str(toml).unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
     }

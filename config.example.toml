@@ -36,3 +36,12 @@
 # prompt   = "#8be9fd"
 # selected = "#f1fa8c"
 # empty    = "#6272a4"
+
+# Window sizing — controls how burst sizes itself when launched as a floating window.
+# Default is fullscreen. Set `fullscreen = false` to use explicit `width` / `height`
+# (in pixels). `width` and `height` are optional; omit them to let your window
+# manager decide.
+[window]
+# fullscreen = true
+# width      = 1280
+# height     = 720
