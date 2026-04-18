@@ -1,0 +1,38 @@
+# Burst config — copy to ~/.config/burst/config.toml (or $XDG_CONFIG_HOME/burst/config.toml)
+# Every field is optional; omitted keys fall back to the built-in defaults.
+# Unknown keys are rejected so typos surface loudly instead of being silently ignored.
+
+# Multi-line ASCII banner shown above the prompt. Use a TOML multi-line string ("""...""")
+# to preserve newlines. Set to "" to hide the banner.
+# banner = """
+#  _                    _
+# | |__  _   _ _ __ ___| |_
+# | '_ \| | | | '__/ __| __|
+# | |_) | |_| | |  \__ \ |_
+# |_.__/ \__,_|_|  |___/\__|
+# """
+
+# String printed before the search cursor.
+# prompt = "> "
+
+# Number of entries shown per page (PageUp/PageDown step size). Must be >= 1.
+# page_size = 10
+
+# Colors accept either a named color or a 6-digit hex string ("#RRGGBB").
+#
+# Named colors (case-insensitive, dashes/underscores ignored):
+#   black, red, green, yellow, blue, magenta, cyan, white,
+#   gray / grey, darkgray / darkgrey,
+#   light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan,
+#   reset (falls back to your terminal's default foreground)
+[colors]
+# banner   = "magenta"    # ASCII banner
+# prompt   = "cyan"       # search prompt + cursor
+# selected = "yellow"     # highlighted entry in the result list
+# empty    = "yellow"     # "no matches" message
+
+# Hex example — pick your own palette:
+# banner   = "#ff79c6"
+# prompt   = "#8be9fd"
+# selected = "#f1fa8c"
+# empty    = "#6272a4"
