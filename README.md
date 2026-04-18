@@ -42,17 +42,17 @@ Burst is a terminal UI, so the Hyprland window class belongs to the terminal tha
 
 ```ini
 # ~/.config/hypr/hyprland.conf
+# Requires Hyprland 0.48+ (unified `windowrule` — `windowrulev2` is deprecated).
 
 # Fullscreen overlay + semi-transparent blur for burst.
-windowrulev2 = float,            class:^(burst)$
-windowrulev2 = size 100% 100%,   class:^(burst)$
-windowrulev2 = center,           class:^(burst)$
-windowrulev2 = opacity 0.9 0.8,  class:^(burst)$
-windowrulev2 = blur,             class:^(burst)$
-windowrulev2 = noborder,         class:^(burst)$
-windowrulev2 = noshadow,         class:^(burst)$
-windowrulev2 = stayfocused,      class:^(burst)$
-windowrulev2 = dimaround,        class:^(burst)$
+windowrule = match:class ^(burst)$, float on
+windowrule = match:class ^(burst)$, size 100% 100%
+windowrule = match:class ^(burst)$, center on
+windowrule = match:class ^(burst)$, opacity 0.9 0.8
+windowrule = match:class ^(burst)$, border_size 0
+windowrule = match:class ^(burst)$, no_shadow on
+windowrule = match:class ^(burst)$, stay_focused on
+windowrule = match:class ^(burst)$, dim_around on
 
 # Bind Super+Space to open burst in a terminal with the burst class.
 # Examples — pick the one matching your terminal:
@@ -62,7 +62,7 @@ bind = SUPER, Space, exec, kitty  --class burst -e burst
 # bind = SUPER, Space, exec, wezterm start --class burst -- burst
 ```
 
-The `opacity 0.9 0.8` rule sets active/inactive opacity; `blur` enables Hyprland's background blur for that window — terminals render on a transparent-capable background so the blur shows through. `stayfocused` keeps the overlay dismiss-on-blur-safe, and `dimaround` dims the rest of the screen while burst is open.
+The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to the transparent regions as long as `decoration:blur:enabled = true` is set globally — terminals render on a transparent-capable background so the blur shows through. `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while burst is open.
 
 Burst renders a fade-in animation on open (configurable timing lives in `src/effects.rs`). Escape closes the overlay.
 
