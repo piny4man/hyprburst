@@ -1,23 +1,35 @@
 use ratatui::prelude::*;
 
 use crate::config::Config;
+use crate::effects::FadeIn;
 use crate::launcher::Launcher;
 
 pub struct App {
     pub running: bool,
     launcher: Launcher,
+    fade_in: FadeIn,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let launcher = Launcher::new(config);
         let running = launcher.running;
-        Self { running, launcher }
+        Self {
+            running,
+            launcher,
+            fade_in: FadeIn::new(),
+        }
     }
 
     pub fn handle_event(&mut self, event: &crossterm::event::Event) {
         self.launcher.handle_event(event);
         self.running = self.launcher.running;
+    }
+
+    pub fn apply_effects(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if !self.fade_in.is_done() {
+            self.fade_in.apply(frame, area);
+        }
     }
 }
 

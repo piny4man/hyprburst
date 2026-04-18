@@ -9,3 +9,11 @@ crossterm = "0.29"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+tachyonfx = "0.25"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

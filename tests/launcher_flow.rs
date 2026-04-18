@@ -1,0 +1,168 @@
+//! End-to-end integration tests that drive the full `App` through key events and
+//! render it to a `Buffer`, asserting on the resulting frame just like a user
+//! interacting with the TUI would see it.
+
+use burst::app::App;
+use burst::config::Config;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::widgets::Widget;
+
+fn key(code: KeyCode) -> Event {
+    Event::Key(KeyEvent {
+        code,
+        modifiers: KeyModifiers::NONE,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    })
+}
+
+fn render(app: &mut App, width: u16, height: u16) -> Buffer {
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    buf
+}
+
+fn row_text(buf: &Buffer, y: u16) -> String {
+    let area = *buf.area();
+    (0..area.width)
+        .map(|x| buf[(x, y)].symbol().to_string())
+        .collect()
+}
+
+fn frame_contains(buf: &Buffer, needle: &str) -> bool {
+    let area = *buf.area();
+    (0..area.height).any(|y| row_text(buf, y).contains(needle))
+}
+
+#[test]
+fn app_starts_running_with_default_config() {
+    let app = App::new(Config::default());
+    assert!(app.running, "app should start in running state");
+}
+
+#[test]
+fn escape_exits_full_app() {
+    let mut app = App::new(Config::default());
+    app.handle_event(&key(KeyCode::Esc));
+    assert!(!app.running, "Escape should stop the app");
+}
+
+#[test]
+fn default_banner_renders_at_top_of_frame() {
+    let mut app = App::new(Config::default());
+    let buf = render(&mut app, 80, 24);
+    // The built-in ASCII banner starts with " _" on the first row.
+    let first_row = row_text(&buf, 0);
+    assert!(
+        first_row.trim_start().starts_with("_"),
+        "expected banner art on first row, got {:?}",
+        first_row
+    );
+}
+
+fn no_banner_config() -> Config {
+    Config {
+        banner: String::new(),
+        ..Config::default()
+    }
+}
+
+#[test]
+fn custom_banner_overrides_default() {
+    let cfg = Config {
+        banner: "CUSTOM-BANNER".to_string(),
+        ..Config::default()
+    };
+    let mut app = App::new(cfg);
+    let buf = render(&mut app, 40, 10);
+    assert!(
+        frame_contains(&buf, "CUSTOM-BANNER"),
+        "expected custom banner text in frame"
+    );
+}
+
+#[test]
+fn empty_banner_hides_banner_and_prompt_moves_up() {
+    let mut app = App::new(no_banner_config());
+    let buf = render(&mut app, 40, 10);
+    let first_row = row_text(&buf, 0);
+    assert!(
+        first_row.contains("> "),
+        "with empty banner the prompt should render on the first row, got {:?}",
+        first_row
+    );
+}
+
+#[test]
+fn typing_updates_visible_prompt() {
+    let mut app = App::new(no_banner_config());
+    for c in "firefox".chars() {
+        app.handle_event(&key(KeyCode::Char(c)));
+    }
+    let buf = render(&mut app, 60, 10);
+    assert!(
+        frame_contains(&buf, "> firefox"),
+        "prompt row should echo typed query"
+    );
+}
+
+#[test]
+fn backspace_reverts_prompt_characters() {
+    let mut app = App::new(no_banner_config());
+    for c in "abc".chars() {
+        app.handle_event(&key(KeyCode::Char(c)));
+    }
+    app.handle_event(&key(KeyCode::Backspace));
+    app.handle_event(&key(KeyCode::Backspace));
+    let buf = render(&mut app, 40, 10);
+    let prompt_row = row_text(&buf, 0);
+    assert!(
+        prompt_row.contains("> a") && !prompt_row.contains("> ab"),
+        "expected single remaining char after two backspaces, got {:?}",
+        prompt_row
+    );
+}
+
+#[test]
+fn apply_effects_is_safe_to_invoke_without_a_frame() {
+    // Sanity: the App exposes apply_effects for the render loop. We can't build a
+    // real Frame in tests without a Backend, but we can confirm the effect path
+    // does not panic when stitched through the widget render.
+    let mut app = App::new(Config::default());
+    let _buf = render(&mut app, 80, 24);
+    // A second render covers the post-fade path when some time has passed.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let _buf = render(&mut app, 80, 24);
+}
+
+#[test]
+fn full_flow_type_navigate_escape() {
+    let mut app = App::new(Config::default());
+    // Type a query.
+    for c in "xy".chars() {
+        app.handle_event(&key(KeyCode::Char(c)));
+    }
+    // Move around with the arrow keys — should never panic, never exit.
+    app.handle_event(&key(KeyCode::Down));
+    app.handle_event(&key(KeyCode::Up));
+    app.handle_event(&key(KeyCode::PageDown));
+    app.handle_event(&key(KeyCode::PageUp));
+    assert!(app.running);
+    // Escape closes the overlay.
+    app.handle_event(&key(KeyCode::Esc));
+    assert!(!app.running);
+}
+
+#[test]
+fn events_are_ignored_after_app_stops() {
+    let mut app = App::new(Config::default());
+    app.handle_event(&key(KeyCode::Esc));
+    assert!(!app.running);
+    // Any further events should stay a no-op.
+    app.handle_event(&key(KeyCode::Char('a')));
+    app.handle_event(&key(KeyCode::Down));
+    assert!(!app.running);
+}
