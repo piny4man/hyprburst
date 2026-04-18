@@ -45,3 +45,11 @@
 # fullscreen = true
 # width      = 1280
 # height     = 720
+
+# Font selection — point burst at a specific font file or let it pick from the
+# system. When `path` is unset (or the file is missing), burst tries Nerd Font
+# families in order — JetBrainsMono Nerd Font, FiraCode Nerd Font, Symbols Nerd
+# Font — then falls back to the first available monospace face.
+[font]
+# path = "/usr/share/fonts/JetBrainsMono/JetBrainsMonoNerdFont-Regular.ttf"
+# size = 14.0

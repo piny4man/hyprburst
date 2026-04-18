@@ -10,6 +10,7 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tachyonfx = "0.25"
+fontdb = "0.23.0"
 
 [profile.release]
 opt-level = 3
