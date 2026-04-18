@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::prelude::*;
 
 use crate::desktop::{DesktopEntry, discover_apps};
+use crate::history::{History, score as history_score};
 use crate::search::filter_and_rank;
 
 pub struct Launcher {
@@ -11,20 +14,27 @@ pub struct Launcher {
     pub filtered: Vec<(usize, u32)>,
     pub selected_index: usize,
     pub running: bool,
+    pub(crate) history: Option<History>,
+    pub(crate) scores: HashMap<String, f64>,
 }
 
 impl Launcher {
     pub fn new() -> Self {
         let apps = discover_apps();
         let running = !apps.is_empty();
-        let filtered: Vec<_> = apps.iter().enumerate().map(|(i, _)| (i, 0u32)).collect();
-        Self {
+        let history = History::open().ok();
+        let scores = history.as_ref().map(load_scores).unwrap_or_default();
+        let mut launcher = Self {
             apps,
             query: String::new(),
-            filtered,
+            filtered: Vec::new(),
             selected_index: 0,
             running,
-        }
+            history,
+            scores,
+        };
+        launcher.rebuild_filtered();
+        launcher
     }
 
     pub fn handle_event(&mut self, event: &crossterm::event::Event) {
@@ -88,7 +98,7 @@ impl Launcher {
     }
 
     fn rebuild_filtered(&mut self) {
-        let ranked = filter_and_rank(&self.query, &self.apps);
+        let ranked = filter_and_rank(&self.query, &self.apps, &self.scores);
         self.filtered = ranked
             .into_iter()
             .map(|(app, score)| {
@@ -128,15 +138,31 @@ impl Launcher {
     fn launch_selected(&mut self) {
         if self.selected_index < self.filtered.len() {
             let (idx, _) = self.filtered[self.selected_index];
-            let exec = &self.apps[idx].exec;
-            if !exec.is_empty() {
+            let app = &self.apps[idx];
+            if !app.exec.is_empty() {
                 let _ = Command::new("hyprctl")
-                    .args(["dispatch", "exec", "--", exec])
+                    .args(["dispatch", "exec", "--", &app.exec])
                     .spawn();
+            }
+            if let Some(history) = &self.history {
+                let _ = history.record_launch(&app.id, &app.name);
             }
         }
         self.running = false;
     }
+}
+
+fn load_scores(history: &History) -> HashMap<String, f64> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    history
+        .all()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| (entry.desktop_id.clone(), history_score(&entry, now)))
+        .collect()
 }
 
 impl Widget for &mut Launcher {
@@ -212,16 +238,19 @@ mod tests {
         Launcher {
             apps: vec![
                 DesktopEntry {
+                    id: "app-a".into(),
                     name: "App A".into(),
                     icon: "icon-a".into(),
                     exec: "app-a".into(),
                 },
                 DesktopEntry {
+                    id: "app-b".into(),
                     name: "App B".into(),
                     icon: "icon-b".into(),
                     exec: "app-b".into(),
                 },
                 DesktopEntry {
+                    id: "app-c".into(),
                     name: "App C".into(),
                     icon: "icon-c".into(),
                     exec: "app-c".into(),
@@ -231,6 +260,8 @@ mod tests {
             filtered: vec![(0, 0), (1, 0), (2, 0)],
             selected_index: 0,
             running: true,
+            history: None,
+            scores: std::collections::HashMap::new(),
         }
     }
 
@@ -338,6 +369,8 @@ mod tests {
             filtered: vec![],
             selected_index: 0,
             running: true,
+            history: None,
+            scores: std::collections::HashMap::new(),
         };
         let event = make_key_event(KeyCode::Esc);
         launcher.handle_event(&event);
@@ -351,5 +384,35 @@ mod tests {
         launcher.handle_event(&event);
         assert_eq!(launcher.query, "A");
         assert!(launcher.selected_index == 0);
+    }
+
+    #[test]
+    fn enter_records_launch_in_history() {
+        let history = History::in_memory().unwrap();
+        let mut launcher = make_launcher_with_apps();
+        launcher.history = Some(history);
+
+        let event = make_key_event(KeyCode::Enter);
+        launcher.handle_event(&event);
+
+        let entry = launcher
+            .history
+            .as_ref()
+            .unwrap()
+            .get("app-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.launch_count, 1);
+        assert_eq!(entry.app_name, "App A");
+    }
+
+    #[test]
+    fn empty_query_places_most_used_first() {
+        let mut launcher = make_launcher_with_apps();
+        launcher.scores.insert("app-c".to_string(), 42.0);
+        launcher.rebuild_filtered();
+
+        let (top_idx, _) = launcher.filtered[0];
+        assert_eq!(launcher.apps[top_idx].id, "app-c");
     }
 }

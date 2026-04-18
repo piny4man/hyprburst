@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
+rusqlite = { version = "0.39", features = ["bundled"] }
