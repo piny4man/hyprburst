@@ -1,5 +1,6 @@
 use ratatui::prelude::*;
 
+use crate::config::Config;
 use crate::launcher::Launcher;
 
 pub struct App {
@@ -8,8 +9,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
-        let launcher = Launcher::new();
+    pub fn new(config: Config) -> Self {
+        let launcher = Launcher::new(config);
         let running = launcher.running;
         Self { running, launcher }
     }
@@ -42,13 +43,13 @@ mod tests {
 
     #[test]
     fn app_starts_running() {
-        let app = App::new();
+        let app = App::new(Config::default());
         assert!(app.running);
     }
 
     #[test]
     fn escape_stops_app() {
-        let mut app = App::new();
+        let mut app = App::new(Config::default());
         let event = make_key_event(KeyCode::Esc);
         app.handle_event(&event);
         assert!(!app.running);
@@ -56,7 +57,7 @@ mod tests {
 
     #[test]
     fn other_keys_keep_app_running() {
-        let mut app = App::new();
+        let mut app = App::new(Config::default());
         for code in [
             KeyCode::Tab,
             KeyCode::Char('a'),

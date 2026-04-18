@@ -7,3 +7,5 @@ edition = "2024"
 ratatui = "0.30"
 crossterm = "0.29"
 rusqlite = { version = "0.39", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
