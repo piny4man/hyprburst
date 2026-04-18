@@ -5,7 +5,11 @@ pub mod effects;
 pub mod font;
 pub mod history;
 pub mod icon;
+#[cfg(feature = "terminal")]
 pub mod input;
 pub mod launcher;
 pub mod search;
+#[cfg(feature = "terminal")]
 pub mod terminal;
+#[cfg(feature = "window")]
+pub mod window;

@@ -49,10 +49,12 @@ pub fn resolve(config: &Config, db: &dyn FontDatabase) -> Option<LoadedFont> {
         .map(|(path, index)| LoadedFont { path, index, size })
 }
 
+#[cfg(feature = "window")]
 pub struct SystemFontDatabase {
     db: fontdb::Database,
 }
 
+#[cfg(feature = "window")]
 impl SystemFontDatabase {
     pub fn load() -> Self {
         let mut db = fontdb::Database::new();
@@ -61,12 +63,14 @@ impl SystemFontDatabase {
     }
 }
 
+#[cfg(feature = "window")]
 impl Default for SystemFontDatabase {
     fn default() -> Self {
         Self::load()
     }
 }
 
+#[cfg(feature = "window")]
 impl FontDatabase for SystemFontDatabase {
     fn lookup_family(&self, family: &str) -> Option<(PathBuf, u32)> {
         let id = self.db.query(&fontdb::Query {
@@ -85,6 +89,7 @@ impl FontDatabase for SystemFontDatabase {
     }
 }
 
+#[cfg(feature = "window")]
 fn source_path(source: &fontdb::Source) -> Option<PathBuf> {
     match source {
         fontdb::Source::File(p) => Some(p.clone()),
