@@ -9,7 +9,7 @@ Burst lives inside your terminal emulator with a semi-transparent blurred backgr
 - **Modern terminal aesthetic** — Clean monospace, subtle accent colors, custom ASCII art banners
 - **Fast** — <50ms startup, instant search results as you type
 - **Smart ranking** — Results ranked by recency (exponential decay) + frequency (launch count)
-- **Icon grid** — Apps displayed with icons via kitty graphics protocol, sixel, or unicode/emoji fallback
+- **Icon grid** — Apps displayed with monochrome [Nerd Font](https://www.nerdfonts.com/) glyphs matched by category (browser, terminal, editor, etc.)
 - **SQLite history** — Tracks launch history for smarter results and usage stats
 - **TOML config** — Customizable colors, banner, and settings at `~/.config/burst/config.toml`
 - **Hyprland native** — Launches apps via `hyprctl dispatch exec`
@@ -25,7 +25,7 @@ burst/
 │   ├── desktop.rs       # .desktop file discovery and parsing
 │   ├── effects.rs       # Fade-in animation via tachyonfx
 │   ├── history.rs       # SQLite-backed launch history
-│   ├── icon.rs          # Terminal capability + emoji icon fallback
+│   ├── icon.rs          # Nerd Font glyph mapping by keyword (browser, terminal, editor, ...)
 │   ├── input.rs         # Keyboard input handling and event polling
 │   ├── launcher.rs      # Launcher state, filtering, Hyprland dispatch
 │   ├── search.rs        # Hybrid fuzzy/prefix ranking
@@ -35,6 +35,10 @@ burst/
 ├── Cargo.toml
 └── Cargo.lock
 ```
+
+## Requirements
+
+- **Nerd Font** — burst renders entry icons as Nerd Font glyphs in the private-use Unicode area. The hosting terminal must use a [Nerd Font](https://www.nerdfonts.com/) (e.g. `JetBrainsMono Nerd Font`, `FiraCode Nerd Font`, `Symbols Nerd Font`) or the icons will show as tofu squares.
 
 ## Hyprland Setup
 
@@ -150,7 +154,7 @@ cargo build --release
 ./target/release/burst --bench-startup
 ```
 
-This times the complete cold path — config load, `.desktop` discovery, history open, icon-capability detection — and prints peak resident-set size. On a reference Arch + Hyprland machine the output is:
+This times the complete cold path — config load, `.desktop` discovery, history open — and prints peak resident-set size. On a reference Arch + Hyprland machine the output is:
 
 ```
 burst startup: ~4ms
