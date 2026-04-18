@@ -191,6 +191,8 @@ burst peak RSS: ~5 MB
 
 Both well under the <50ms startup budget and minimal-memory goal.
 
+CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startup.rs` — generous headroom over the ~50ms local goal so shared CI runners don't flake. If the test ever does flake, it will be moved behind `#[ignore]` and run via `cargo test -- --ignored` as an opt-in lane.
+
 ## License
 
 MIT
