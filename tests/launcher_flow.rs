@@ -2,6 +2,8 @@
 //! render it to a `Buffer`, asserting on the resulting frame just like a user
 //! interacting with the TUI would see it.
 
+#![cfg(feature = "terminal")]
+
 use burst::app::App;
 use burst::config::Config;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};

@@ -3,7 +3,6 @@ use std::time::Instant;
 
 use burst::app::App;
 use burst::config::Config;
-use burst::{input, terminal};
 
 fn load_config() -> Config {
     match Config::load() {
@@ -44,7 +43,10 @@ fn read_self_rss_kb() -> Option<u64> {
     None
 }
 
+#[cfg(feature = "terminal")]
 fn run() -> io::Result<()> {
+    use burst::{input, terminal};
+
     let config = load_config();
 
     let mut terminal = terminal::init()?;
@@ -71,6 +73,16 @@ fn run() -> io::Result<()> {
 
     terminal::restore()
 }
+
+#[cfg(all(feature = "window", not(feature = "terminal")))]
+fn run() -> io::Result<()> {
+    Err(io::Error::other(
+        "the `window` backend is not yet implemented; build with `--features terminal` for now",
+    ))
+}
+
+#[cfg(not(any(feature = "terminal", feature = "window")))]
+compile_error!("burst requires at least one of the `terminal` or `window` features");
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();

@@ -41,6 +41,7 @@ impl Launcher {
         launcher
     }
 
+    #[cfg(feature = "terminal")]
     pub fn handle_event(&mut self, event: &crossterm::event::Event) {
         if !self.running {
             return;
@@ -260,7 +261,7 @@ impl Widget for &mut Launcher {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "terminal"))]
 mod tests {
     use super::*;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
