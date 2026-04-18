@@ -1,6 +1,7 @@
 mod app;
 mod desktop;
 mod history;
+mod icon;
 mod input;
 mod launcher;
 mod search;
