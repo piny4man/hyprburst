@@ -30,6 +30,9 @@ burst/
 │   ├── launcher.rs      # Launcher state, filtering, Hyprland dispatch
 │   ├── search.rs        # Hybrid fuzzy/prefix ranking
 │   └── terminal.rs      # Terminal lifecycle (raw mode, alternate screen, panic restore)
+├── packaging/
+│   ├── burst-launch     # Shell wrapper that execs burst inside the user's terminal
+│   └── burst.desktop    # Desktop entry (StartupWMClass=burst)
 ├── .github/workflows/
 │   └── ci.yml           # Pull request CI: fmt, clippy, tests
 ├── Cargo.toml
@@ -58,13 +61,38 @@ windowrule = match:class ^(burst)$, no_shadow on
 windowrule = match:class ^(burst)$, stay_focused on
 windowrule = match:class ^(burst)$, dim_around on
 
-# Bind Super+Space to open burst in a terminal with the burst class.
-# Examples — pick the one matching your terminal:
-bind = SUPER, Space, exec, kitty  --class burst -e burst
-# bind = SUPER, Space, exec, foot  --app-id burst       -- burst
-# bind = SUPER, Space, exec, alacritty --class burst    -e burst
-# bind = SUPER, Space, exec, wezterm start --class burst -- burst
+# Bind Super+Space to burst-launch, which picks your terminal automatically
+# and passes the right --class / --app-id flag so the rules above match.
+bind = SUPER, Space, exec, burst-launch
+
+# Or call your terminal directly if you prefer to pin one:
+# bind = SUPER, Space, exec, alacritty --class=burst -e burst
+# bind = SUPER, Space, exec, wezterm   start --class=burst -- burst
+# bind = SUPER, Space, exec, ghostty   --class=burst -e burst
+# bind = SUPER, Space, exec, kitty     --class=burst burst
+# bind = SUPER, Space, exec, foot      --app-id=burst burst
 ```
+
+### Picking the host terminal
+
+`burst-launch` resolves the terminal in this order:
+
+1. `$TERMINAL` if it's set and on `PATH`.
+2. Fallback chain: `alacritty → wezterm → ghostty → kitty → foot` (first found wins).
+
+To pin a specific terminal without editing the script, export `TERMINAL` from your shell rc — for example:
+
+```sh
+# ~/.config/fish/config.fish
+set -x TERMINAL wezterm
+
+# or ~/.bashrc / ~/.zshrc
+export TERMINAL=wezterm
+```
+
+The script knows the correct class/app-id flag for `alacritty`, `wezterm`, `ghostty`, `kitty`, and `foot`; anything else is invoked as `$TERMINAL -e burst` and may need you to pass the flag yourself in your Hyprland bind.
+
+`burst-launch` lives at [`packaging/burst-launch`](packaging/burst-launch). Copy it onto your `$PATH` (e.g. `install -Dm755 packaging/burst-launch ~/.local/bin/burst-launch`) and optionally install [`packaging/burst.desktop`](packaging/burst.desktop) to `~/.local/share/applications/` so burst shows up in desktop-entry consumers.
 
 The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to the transparent regions as long as `decoration:blur:enabled = true` is set globally — terminals render on a transparent-capable background so the blur shows through. `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while burst is open.
 
@@ -92,11 +120,6 @@ cp config.example.toml ~/.config/burst/config.toml
 | `colors.prompt` | color | `cyan` | Prompt + cursor color. |
 | `colors.selected` | color | `yellow` | Highlighted entry in the result list. |
 | `colors.empty` | color | `yellow` | "No matches" message color. |
-| `window.fullscreen` | bool | `true` | Render burst fullscreen. Set to `false` to use `width`/`height`. |
-| `window.width` | integer | _unset_ | Optional window width in pixels (used when `fullscreen = false`). |
-| `window.height` | integer | _unset_ | Optional window height in pixels (used when `fullscreen = false`). |
-| `font.path` | string | _unset_ | Optional path to a `.ttf`/`.otf` file. Missing path logs a warning and falls back to system lookup. |
-| `font.size` | float | `14.0` | Font size in points. Must be a positive number. |
 
 ### Color values
 
@@ -117,7 +140,7 @@ selected = "light-cyan"
 
 ### Validation
 
-Unknown top-level keys, unknown `[colors]`, `[window]`, or `[font]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, `page_size = 0`, non-positive `font.size`, and type mismatches (e.g. `width = "big"`) are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
+Unknown top-level keys, unknown `[colors]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, and `page_size = 0` are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
 
 ## History Schema
 

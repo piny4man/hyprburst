@@ -3,21 +3,13 @@ name = "burst"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = ["terminal"]
-terminal = ["dep:crossterm"]
-window = ["dep:ratatui-wgpu", "dep:winit", "dep:fontdb"]
-
 [dependencies]
 ratatui = "0.30"
-crossterm = { version = "0.29", optional = true }
+crossterm = "0.29"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tachyonfx = "0.25"
-fontdb = { version = "0.23.0", optional = true }
-ratatui-wgpu = { version = "0.5.0", optional = true }
-winit = { version = "0.30", optional = true }
 
 [profile.release]
 opt-level = 3

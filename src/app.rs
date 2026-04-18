@@ -1,3 +1,4 @@
+use ratatui::crossterm::event::KeyCode;
 use ratatui::prelude::*;
 
 use crate::config::Config;
@@ -21,9 +22,8 @@ impl App {
         }
     }
 
-    #[cfg(feature = "terminal")]
-    pub fn handle_event(&mut self, event: &crossterm::event::Event) {
-        self.launcher.handle_event(event);
+    pub fn handle_key(&mut self, code: KeyCode) {
+        self.launcher.handle_key(code);
         self.running = self.launcher.running;
     }
 
@@ -40,19 +40,9 @@ impl Widget for &mut App {
     }
 }
 
-#[cfg(all(test, feature = "terminal"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-
-    fn make_key_event(code: KeyCode) -> Event {
-        Event::Key(KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        })
-    }
 
     #[test]
     fn app_starts_running() {
@@ -63,8 +53,7 @@ mod tests {
     #[test]
     fn escape_stops_app() {
         let mut app = App::new(Config::default());
-        let event = make_key_event(KeyCode::Esc);
-        app.handle_event(&event);
+        app.handle_key(KeyCode::Esc);
         assert!(!app.running);
     }
 
@@ -79,8 +68,7 @@ mod tests {
             KeyCode::Right,
         ] {
             app.running = true;
-            let event = make_key_event(code);
-            app.handle_event(&event);
+            app.handle_key(code);
             assert!(app.running, "App should still running after {:?}", code);
         }
     }
