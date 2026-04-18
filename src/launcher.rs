@@ -7,7 +7,7 @@ use ratatui::prelude::*;
 use crate::config::Config;
 use crate::desktop::{DesktopEntry, discover_apps};
 use crate::history::{History, score as history_score};
-use crate::icon::{TerminalCapability, detect_capability, fallback_glyph};
+use crate::icon::fallback_glyph;
 use crate::search::filter_and_rank;
 
 pub struct Launcher {
@@ -18,7 +18,6 @@ pub struct Launcher {
     pub running: bool,
     pub(crate) history: Option<History>,
     pub(crate) scores: HashMap<String, f64>,
-    pub(crate) capability: TerminalCapability,
     pub(crate) config: Config,
 }
 
@@ -36,7 +35,6 @@ impl Launcher {
             running,
             history,
             scores,
-            capability: detect_capability(),
             config,
         };
         launcher.rebuild_filtered();
@@ -157,7 +155,7 @@ impl Launcher {
     }
 }
 
-pub(crate) fn icon_glyph_for(app: &DesktopEntry, _capability: TerminalCapability) -> &'static str {
+pub(crate) fn icon_glyph_for(app: &DesktopEntry) -> &'static str {
     fallback_glyph(&app.icon, &app.name)
 }
 
@@ -255,7 +253,7 @@ impl Widget for &mut Launcher {
             };
 
             let app = &self.apps[idx];
-            let glyph = icon_glyph_for(app, self.capability);
+            let glyph = icon_glyph_for(app);
             let line = format!("{}{} {}", prefix, glyph, app.name);
             buf.set_string(list_area.x, y, &line, style);
         }
@@ -304,7 +302,6 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
-            capability: TerminalCapability::Fallback,
             config: Config::default(),
         }
     }
@@ -415,7 +412,6 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
-            capability: TerminalCapability::Fallback,
             config: Config::default(),
         };
         let event = make_key_event(KeyCode::Esc);
@@ -453,27 +449,14 @@ mod tests {
     }
 
     #[test]
-    fn icon_glyph_maps_known_app_to_emoji() {
+    fn icon_glyph_maps_known_app_to_nerd_font() {
         let app = DesktopEntry {
             id: "firefox".into(),
             name: "Firefox".into(),
             icon: "firefox".into(),
             exec: "firefox".into(),
         };
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Fallback), "🦊");
-    }
-
-    #[test]
-    fn icon_glyph_is_capability_independent_for_fallback_rendering() {
-        let app = DesktopEntry {
-            id: "terminal".into(),
-            name: "Terminal".into(),
-            icon: "utilities-terminal".into(),
-            exec: "xterm".into(),
-        };
-        let expected = icon_glyph_for(&app, TerminalCapability::Fallback);
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Kitty), expected);
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Sixel), expected);
+        assert_eq!(icon_glyph_for(&app), "\u{f269}");
     }
 
     #[test]
@@ -484,7 +467,7 @@ mod tests {
             icon: "zzz".into(),
             exec: "qwerty".into(),
         };
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Fallback), "📦");
+        assert_eq!(icon_glyph_for(&app), "\u{f1b2}");
     }
 
     #[test]
@@ -503,7 +486,6 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
-            capability: TerminalCapability::Fallback,
             config: Config {
                 banner: String::new(),
                 ..Config::default()
@@ -517,8 +499,8 @@ mod tests {
             .map(|x| buf[(x, 1)].symbol().to_string())
             .collect::<String>();
         assert!(
-            row.contains("🦊") && row.contains("Firefox"),
-            "expected emoji and name on row, got {:?}",
+            row.contains("\u{f269}") && row.contains("Firefox"),
+            "expected nerd font glyph and name on row, got {:?}",
             row
         );
     }
