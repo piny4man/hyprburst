@@ -6,6 +6,7 @@ use ratatui::prelude::*;
 
 use crate::desktop::{DesktopEntry, discover_apps};
 use crate::history::{History, score as history_score};
+use crate::icon::{TerminalCapability, detect_capability, fallback_glyph};
 use crate::search::filter_and_rank;
 
 pub struct Launcher {
@@ -16,6 +17,7 @@ pub struct Launcher {
     pub running: bool,
     pub(crate) history: Option<History>,
     pub(crate) scores: HashMap<String, f64>,
+    pub(crate) capability: TerminalCapability,
 }
 
 impl Launcher {
@@ -32,6 +34,7 @@ impl Launcher {
             running,
             history,
             scores,
+            capability: detect_capability(),
         };
         launcher.rebuild_filtered();
         launcher
@@ -152,6 +155,10 @@ impl Launcher {
     }
 }
 
+pub(crate) fn icon_glyph_for(app: &DesktopEntry, _capability: TerminalCapability) -> &'static str {
+    fallback_glyph(&app.icon, &app.name)
+}
+
 fn load_scores(history: &History) -> HashMap<String, f64> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -207,14 +214,17 @@ impl Widget for &mut Launcher {
             }
 
             let y = list_area.y + i as u16;
-            let prefix = if i == self.selected_index { "> " } else { "  " };
-            let style = if i == self.selected_index {
+            let selected = i == self.selected_index;
+            let prefix = if selected { "> " } else { "  " };
+            let style = if selected {
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
                 Style::new()
             };
 
-            let line = format!("{}{}", prefix, self.apps[idx].name);
+            let app = &self.apps[idx];
+            let glyph = icon_glyph_for(app, self.capability);
+            let line = format!("{}{} {}", prefix, glyph, app.name);
             buf.set_string(list_area.x, y, &line, style);
         }
     }
@@ -262,6 +272,7 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
+            capability: TerminalCapability::Fallback,
         }
     }
 
@@ -371,6 +382,7 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
+            capability: TerminalCapability::Fallback,
         };
         let event = make_key_event(KeyCode::Esc);
         launcher.handle_event(&event);
@@ -404,6 +416,73 @@ mod tests {
             .unwrap();
         assert_eq!(entry.launch_count, 1);
         assert_eq!(entry.app_name, "App A");
+    }
+
+    #[test]
+    fn icon_glyph_maps_known_app_to_emoji() {
+        let app = DesktopEntry {
+            id: "firefox".into(),
+            name: "Firefox".into(),
+            icon: "firefox".into(),
+            exec: "firefox".into(),
+        };
+        assert_eq!(icon_glyph_for(&app, TerminalCapability::Fallback), "🦊");
+    }
+
+    #[test]
+    fn icon_glyph_is_capability_independent_for_fallback_rendering() {
+        let app = DesktopEntry {
+            id: "terminal".into(),
+            name: "Terminal".into(),
+            icon: "utilities-terminal".into(),
+            exec: "xterm".into(),
+        };
+        let expected = icon_glyph_for(&app, TerminalCapability::Fallback);
+        assert_eq!(icon_glyph_for(&app, TerminalCapability::Kitty), expected);
+        assert_eq!(icon_glyph_for(&app, TerminalCapability::Sixel), expected);
+    }
+
+    #[test]
+    fn icon_glyph_unknown_app_returns_generic() {
+        let app = DesktopEntry {
+            id: "xyz".into(),
+            name: "Qwerty".into(),
+            icon: "zzz".into(),
+            exec: "qwerty".into(),
+        };
+        assert_eq!(icon_glyph_for(&app, TerminalCapability::Fallback), "📦");
+    }
+
+    #[test]
+    fn render_draws_icon_before_app_name() {
+        let app = DesktopEntry {
+            id: "firefox".into(),
+            name: "Firefox".into(),
+            icon: "firefox".into(),
+            exec: "firefox".into(),
+        };
+        let mut launcher = Launcher {
+            apps: vec![app],
+            query: String::new(),
+            filtered: vec![(0, 0)],
+            selected_index: 0,
+            running: true,
+            history: None,
+            scores: std::collections::HashMap::new(),
+            capability: TerminalCapability::Fallback,
+        };
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+        (&mut launcher).render(area, &mut buf);
+
+        let row = (0..area.width)
+            .map(|x| buf[(x, 1)].symbol().to_string())
+            .collect::<String>();
+        assert!(
+            row.contains("🦊") && row.contains("Firefox"),
+            "expected emoji and name on row, got {:?}",
+            row
+        );
     }
 
     #[test]
