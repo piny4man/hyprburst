@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 pub struct DesktopEntry {
+    pub id: String,
     pub name: String,
     pub icon: String,
     pub exec: String,
@@ -51,6 +52,7 @@ impl DesktopEntry {
         }
 
         Some(DesktopEntry {
+            id: String::new(),
             name,
             icon: icon.unwrap_or_default(),
             exec: exec.unwrap_or_default(),
@@ -78,8 +80,12 @@ pub fn discover_apps() -> Vec<DesktopEntry> {
                 let path = entry.path();
                 if path.extension().is_some_and(|ext| ext == "desktop")
                     && let Ok(content) = fs::read_to_string(&path)
-                    && let Some(app) = DesktopEntry::parse(&content)
+                    && let Some(mut app) = DesktopEntry::parse(&content)
                 {
+                    app.id = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     apps.push(app);
                 }
             }
