@@ -95,6 +95,8 @@ cp config.example.toml ~/.config/burst/config.toml
 | `window.fullscreen` | bool | `true` | Render burst fullscreen. Set to `false` to use `width`/`height`. |
 | `window.width` | integer | _unset_ | Optional window width in pixels (used when `fullscreen = false`). |
 | `window.height` | integer | _unset_ | Optional window height in pixels (used when `fullscreen = false`). |
+| `font.path` | string | _unset_ | Optional path to a `.ttf`/`.otf` file. Missing path logs a warning and falls back to system lookup. |
+| `font.size` | float | `14.0` | Font size in points. Must be a positive number. |
 
 ### Color values
 
@@ -115,7 +117,7 @@ selected = "light-cyan"
 
 ### Validation
 
-Unknown top-level keys, unknown `[colors]` or `[window]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, `page_size = 0`, and type mismatches (e.g. `width = "big"`) are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
+Unknown top-level keys, unknown `[colors]`, `[window]`, or `[font]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, `page_size = 0`, non-positive `font.size`, and type mismatches (e.g. `width = "big"`) are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
 
 ## History Schema
 

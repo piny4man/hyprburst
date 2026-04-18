@@ -21,6 +21,7 @@ pub struct Config {
     pub page_size: usize,
     pub colors: Colors,
     pub window: Window,
+    pub font: Font,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +39,12 @@ pub struct Window {
     pub fullscreen: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Font {
+    pub path: Option<PathBuf>,
+    pub size: Option<f32>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -46,6 +53,7 @@ impl Default for Config {
             page_size: DEFAULT_PAGE_SIZE,
             colors: Colors::default(),
             window: Window::default(),
+            font: Font::default(),
         }
     }
 }
@@ -139,6 +147,7 @@ struct RawConfig {
     page_size: Option<usize>,
     colors: RawColors,
     window: RawWindow,
+    font: RawFont,
 }
 
 #[derive(Default, Deserialize)]
@@ -158,6 +167,13 @@ struct RawWindow {
     fullscreen: Option<bool>,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawFont {
+    path: Option<PathBuf>,
+    size: Option<f32>,
+}
+
 impl RawConfig {
     fn into_config(self) -> Result<Config, ConfigError> {
         let defaults = Config::default();
@@ -167,6 +183,14 @@ impl RawConfig {
         {
             return Err(ConfigError::Validation(
                 "page_size must be at least 1".to_string(),
+            ));
+        }
+
+        if let Some(size) = self.font.size
+            && (!size.is_finite() || size <= 0.0)
+        {
+            return Err(ConfigError::Validation(
+                "font.size must be a positive number".to_string(),
             ));
         }
 
@@ -188,6 +212,10 @@ impl RawConfig {
                 width: self.window.width,
                 height: self.window.height,
                 fullscreen: self.window.fullscreen.unwrap_or(defaults.window.fullscreen),
+            },
+            font: Font {
+                path: self.font.path,
+                size: self.font.size,
             },
         })
     }
@@ -486,6 +514,54 @@ width = "big"
 "#;
         let err = Config::from_toml_str(toml).unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn font_defaults_to_none_when_section_missing() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg.font.path, None);
+        assert_eq!(cfg.font.size, None);
+    }
+
+    #[test]
+    fn font_path_and_size_parsed() {
+        let toml = r#"[font]
+path = "/usr/share/fonts/foo.ttf"
+size = 16.0
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(
+            cfg.font.path,
+            Some(PathBuf::from("/usr/share/fonts/foo.ttf"))
+        );
+        assert_eq!(cfg.font.size, Some(16.0));
+    }
+
+    #[test]
+    fn font_unknown_key_rejected() {
+        let toml = r#"[font]
+weight = "bold"
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn font_type_mismatch_rejected() {
+        let toml = r#"[font]
+size = "big"
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn font_non_positive_size_rejected() {
+        let toml = r#"[font]
+size = 0.0
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
     }
 
     #[test]

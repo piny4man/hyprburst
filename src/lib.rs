@@ -2,6 +2,7 @@ pub mod app;
 pub mod config;
 pub mod desktop;
 pub mod effects;
+pub mod font;
 pub mod history;
 pub mod icon;
 pub mod input;
