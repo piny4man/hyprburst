@@ -61,9 +61,47 @@ bind = SUPER, Space, exec, burst
 
 ## Config
 
-Default config location: `~/.config/burst/config.toml`
+Default location: `$XDG_CONFIG_HOME/burst/config.toml`, falling back to `~/.config/burst/config.toml`. No config file is required — burst ships with sensible defaults and an invalid config is reported on stderr before falling back to them.
 
-Sensible defaults are built in — no config required to start using burst.
+A fully-commented template lives at [`config.example.toml`](config.example.toml). Copy it and uncomment the fields you want to change:
+
+```bash
+mkdir -p ~/.config/burst
+cp config.example.toml ~/.config/burst/config.toml
+```
+
+### Fields
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `banner` | string | built-in ASCII "burst" | Multi-line TOML string (`"""..."""`). Empty string hides the banner. |
+| `prompt` | string | `"> "` | Printed before the search cursor. |
+| `page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
+| `colors.banner` | color | `magenta` | ASCII banner color. |
+| `colors.prompt` | color | `cyan` | Prompt + cursor color. |
+| `colors.selected` | color | `yellow` | Highlighted entry in the result list. |
+| `colors.empty` | color | `yellow` | "No matches" message color. |
+
+### Color values
+
+Each color accepts either a **named color** (case-insensitive, dashes/underscores ignored) or a **6-digit hex string** like `#ff79c6`.
+
+Named colors: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`/`grey`, `darkgray`/`darkgrey`, `light-red`, `light-green`, `light-yellow`, `light-blue`, `light-magenta`, `light-cyan`, `reset` (terminal default).
+
+### Minimal example
+
+```toml
+prompt = "λ "
+page_size = 8
+
+[colors]
+banner   = "#ff79c6"
+selected = "light-cyan"
+```
+
+### Validation
+
+Unknown top-level keys, unknown `[colors]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, and `page_size = 0` are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
 
 ## History Schema
 

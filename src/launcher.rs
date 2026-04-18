@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::prelude::*;
 
+use crate::config::Config;
 use crate::desktop::{DesktopEntry, discover_apps};
 use crate::history::{History, score as history_score};
 use crate::icon::{TerminalCapability, detect_capability, fallback_glyph};
@@ -18,10 +19,11 @@ pub struct Launcher {
     pub(crate) history: Option<History>,
     pub(crate) scores: HashMap<String, f64>,
     pub(crate) capability: TerminalCapability,
+    pub(crate) config: Config,
 }
 
 impl Launcher {
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
         let apps = discover_apps();
         let running = !apps.is_empty();
         let history = History::open().ok();
@@ -35,6 +37,7 @@ impl Launcher {
             history,
             scores,
             capability: detect_capability(),
+            config,
         };
         launcher.rebuild_filtered();
         launcher
@@ -126,16 +129,15 @@ impl Launcher {
         if self.filtered.is_empty() {
             return;
         }
-        let page_size = 10;
-        self.selected_index = self.selected_index.saturating_sub(page_size);
+        self.selected_index = self.selected_index.saturating_sub(self.config.page_size);
     }
 
     fn page_down(&mut self) {
         if self.filtered.is_empty() {
             return;
         }
-        let page_size = 10;
-        self.selected_index = (self.selected_index + page_size).min(self.filtered.len() - 1);
+        self.selected_index =
+            (self.selected_index + self.config.page_size).min(self.filtered.len() - 1);
     }
 
     fn launch_selected(&mut self) {
@@ -174,27 +176,55 @@ fn load_scores(history: &History) -> HashMap<String, f64> {
 
 impl Widget for &mut Launcher {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let banner_lines: Vec<&str> = if self.config.banner.is_empty() {
+            Vec::new()
+        } else {
+            self.config.banner.lines().collect()
+        };
+        let banner_height = (banner_lines.len() as u16).min(area.height);
+        let banner_style = Style::new()
+            .fg(self.config.colors.banner)
+            .add_modifier(Modifier::BOLD);
+        for (i, line) in banner_lines.iter().take(banner_height as usize).enumerate() {
+            buf.set_string(area.x, area.y + i as u16, *line, banner_style);
+        }
+
+        let input_y = area.y + banner_height;
+        if input_y >= area.y + area.height {
+            return;
+        }
         let input_area = Rect {
             x: area.x,
-            y: area.y,
+            y: input_y,
             width: area.width,
             height: 1,
         };
 
-        let prompt = format!("> {}", self.query);
-        let input_style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-        buf.set_string(input_area.x, input_area.y, &prompt, input_style);
+        let prompt_text = format!("{}{}", self.config.prompt, self.query);
+        let input_style = Style::new()
+            .fg(self.config.colors.prompt)
+            .add_modifier(Modifier::BOLD);
+        buf.set_string(input_area.x, input_area.y, &prompt_text, input_style);
 
-        let cursor_x = input_area.x + 2 + self.query.len() as u16;
+        let cursor_x = input_area.x + prompt_text.chars().count() as u16;
         if cursor_x < input_area.x + input_area.width {
-            buf.set_string(cursor_x, input_area.y, "█", Style::new().fg(Color::Cyan));
+            buf.set_string(
+                cursor_x,
+                input_area.y,
+                "█",
+                Style::new().fg(self.config.colors.prompt),
+            );
         }
 
+        let list_y = input_y + 1;
+        if list_y >= area.y + area.height {
+            return;
+        }
         let list_area = Rect {
             x: area.x,
-            y: area.y + 1,
+            y: list_y,
             width: area.width,
-            height: area.height.saturating_sub(1),
+            height: area.y + area.height - list_y,
         };
 
         if self.filtered.is_empty() {
@@ -203,7 +233,7 @@ impl Widget for &mut Launcher {
             } else {
                 "No matches"
             };
-            let style = Style::new().fg(Color::Yellow);
+            let style = Style::new().fg(self.config.colors.empty);
             buf.set_string(list_area.x, list_area.y, msg, style);
             return;
         }
@@ -217,7 +247,9 @@ impl Widget for &mut Launcher {
             let selected = i == self.selected_index;
             let prefix = if selected { "> " } else { "  " };
             let style = if selected {
-                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(self.config.colors.selected)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::new()
             };
@@ -273,6 +305,7 @@ mod tests {
             history: None,
             scores: std::collections::HashMap::new(),
             capability: TerminalCapability::Fallback,
+            config: Config::default(),
         }
     }
 
@@ -383,6 +416,7 @@ mod tests {
             history: None,
             scores: std::collections::HashMap::new(),
             capability: TerminalCapability::Fallback,
+            config: Config::default(),
         };
         let event = make_key_event(KeyCode::Esc);
         launcher.handle_event(&event);
@@ -470,6 +504,10 @@ mod tests {
             history: None,
             scores: std::collections::HashMap::new(),
             capability: TerminalCapability::Fallback,
+            config: Config {
+                banner: String::new(),
+                ..Config::default()
+            },
         };
         let area = Rect::new(0, 0, 40, 5);
         let mut buf = Buffer::empty(area);
