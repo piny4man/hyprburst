@@ -158,6 +158,7 @@ impl Widget for &mut Launcher {
             input: input_area,
             separator: separator_area,
             list: list_area,
+            columns,
         } = layout::compute(area, &self.config);
 
         if banner_area.height > 0 && !self.config.ui.banner.is_empty() {
@@ -227,12 +228,19 @@ impl Widget for &mut Launcher {
         let marker_width = marker.chars().count();
         let unselected_prefix: String = " ".repeat(marker_width);
 
-        for (i, &(idx, _score)) in self.filtered.iter().enumerate() {
-            if i as u16 >= list_area.height {
+        let columns = columns.max(1);
+        let col_width = list_area.width / columns;
+        let max_rows = list_area.height as usize;
+        let max_cells = max_rows.saturating_mul(columns as usize);
+
+        for (i, &(idx, _score)) in self.filtered.iter().enumerate().take(max_cells) {
+            let row = (i / columns as usize) as u16;
+            let col = (i % columns as usize) as u16;
+            if row >= list_area.height {
                 break;
             }
-
-            let y = list_area.y + i as u16;
+            let cell_x = list_area.x + col * col_width;
+            let cell_y = list_area.y + row;
             let selected = i == self.selected_index;
             let prefix: &str = if selected { marker } else { &unselected_prefix };
             let style = if selected {
@@ -244,13 +252,20 @@ impl Widget for &mut Launcher {
             };
 
             let app = &self.apps[idx];
-            let line = if self.config.ui.show_icons {
+            let mut line = if self.config.ui.show_icons {
                 let glyph = icon_glyph_for(app);
                 format!("{}{} {}", prefix, glyph, app.name)
             } else {
                 format!("{}{}", prefix, app.name)
             };
-            buf.set_string(list_area.x, y, &line, style);
+            if columns > 1 {
+                let cell_width = col_width as usize;
+                let line_width = line.chars().count();
+                if line_width > cell_width {
+                    line = line.chars().take(cell_width).collect();
+                }
+            }
+            buf.set_string(cell_x, cell_y, &line, style);
         }
     }
 }
