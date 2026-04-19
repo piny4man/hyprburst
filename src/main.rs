@@ -64,8 +64,8 @@ fn run() -> io::Result<()> {
                 app.apply_effects(frame, area);
             })
             .expect("terminal draw failed");
-        if let Some(event) = input::poll_event()? {
-            app.handle_event(&event);
+        if let Some(code) = input::poll_key()? {
+            app.handle_key(code);
         }
     }
 
