@@ -1,11 +1,31 @@
 use std::io;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::time::Instant;
 
 use burst::app::App;
 use burst::config::Config;
+use burst::terminal_resolver::{self, Env, ResolveError, SystemPathProbe};
 use burst::{input, terminal};
 
-fn load_config() -> Config {
+const HELP: &str = "\
+burst — a fast application launcher
+
+USAGE:
+    burst [COMMAND]
+
+COMMANDS:
+    launch    Re-exec burst inside the user's preferred terminal emulator
+    help      Print this help message
+
+FLAGS:
+    -h, --help           Print this help message
+    --bench-startup      Measure config-load + App::new latency and exit
+
+With no command, burst runs the TUI in the current terminal.
+";
+
+fn load_config_for_tui() -> Config {
     match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -18,7 +38,7 @@ fn load_config() -> Config {
 
 fn bench_startup() -> io::Result<()> {
     let start = Instant::now();
-    let config = load_config();
+    let config = load_config_for_tui();
     let _app = App::new(config);
     let elapsed = start.elapsed();
     println!("burst startup: {:.2}ms", elapsed.as_secs_f64() * 1_000.0);
@@ -44,8 +64,8 @@ fn read_self_rss_kb() -> Option<u64> {
     None
 }
 
-fn run() -> io::Result<()> {
-    let config = load_config();
+fn run_tui() -> io::Result<()> {
+    let config = load_config_for_tui();
 
     let mut terminal = terminal::init()?;
     let original_hook = std::panic::take_hook();
@@ -72,10 +92,57 @@ fn run() -> io::Result<()> {
     terminal::restore()
 }
 
+/// Re-exec burst inside the user's preferred terminal emulator.
+///
+/// Loads config, snapshots the environment, resolves the terminal, then
+/// `execvp`s into `<binary> <argv...>`. Only returns on error — on success
+/// the process image is replaced.
+fn run_launch() -> ! {
+    let config = match Config::load() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("burst launch: config parse failed: {}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let env = Env::from_env();
+    let resolved = match terminal_resolver::resolve(&config, &env, &SystemPathProbe) {
+        Ok(r) => r,
+        Err(err @ ResolveError::NoTerminalFound) => {
+            eprintln!("burst launch: {}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let err = Command::new(&resolved.binary).args(&resolved.argv).exec();
+    eprintln!(
+        "burst launch: failed to exec {} {}: {}",
+        resolved.binary,
+        resolved.argv.join(" "),
+        err
+    );
+    std::process::exit(1);
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
     if args.iter().any(|a| a == "--bench-startup") {
         return bench_startup();
     }
-    run()
+
+    match args.first().map(String::as_str) {
+        None => run_tui(),
+        Some("launch") => run_launch(),
+        Some("help" | "--help" | "-h") => {
+            print!("{}", HELP);
+            Ok(())
+        }
+        Some(other) => {
+            eprintln!("burst: unknown command '{}'\n", other);
+            eprint!("{}", HELP);
+            std::process::exit(2);
+        }
+    }
 }
