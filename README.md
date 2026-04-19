@@ -27,12 +27,14 @@ burst/
 │   ├── history.rs       # SQLite-backed launch history
 │   ├── icon.rs          # Nerd Font glyph mapping by keyword (browser, terminal, editor, ...)
 │   ├── input.rs         # Keyboard input handling and event polling
-│   ├── launcher.rs      # Launcher state, filtering, Hyprland dispatch
-│   ├── search.rs        # Hybrid fuzzy/prefix ranking
-│   └── terminal.rs      # Terminal lifecycle (raw mode, alternate screen, panic restore)
+│   ├── launcher.rs           # Launcher state, filtering, Hyprland dispatch
+│   ├── layout.rs             # Pure layout geometry (list + grid modes)
+│   ├── search.rs             # Hybrid fuzzy/prefix ranking
+│   ├── terminal.rs           # Terminal lifecycle (raw mode, alternate screen, panic restore)
+│   └── terminal_resolver.rs  # Deterministic host-terminal resolution for `burst launch`
 ├── packaging/
-│   ├── burst-launch     # Shell wrapper that execs burst inside the user's terminal
-│   └── burst.desktop    # Desktop entry (StartupWMClass=burst)
+│   ├── burst.desktop         # Desktop entry (StartupWMClass=burst)
+│   └── hyprland-burst.conf   # Drop-in Hyprland config: windowrules + Super+Space bind
 ├── .github/workflows/
 │   └── ci.yml           # Pull request CI: fmt, clippy, tests
 ├── Cargo.toml
@@ -45,13 +47,18 @@ burst/
 
 ## Hyprland Setup
 
-Burst is a terminal UI, so the Hyprland window class belongs to the terminal that hosts it. Launch your terminal with a dedicated class (e.g. `burst`) so these rules target only burst windows:
+Burst is a terminal UI, so the Hyprland window class belongs to the terminal that hosts it. A ready-to-use config lives at [`packaging/hyprland-burst.conf`](packaging/hyprland-burst.conf) — it contains the windowrules that target the `burst` class and a `Super+Space` bind that runs `burst launch` (the built-in subcommand that resolves a terminal and re-execs burst inside it with the right class flag).
+
+```sh
+# Drop the config next to hyprland.conf and source it.
+install -Dm644 packaging/hyprland-burst.conf ~/.config/hypr/hyprland-burst.conf
+echo 'source = ~/.config/hypr/hyprland-burst.conf' >> ~/.config/hypr/hyprland.conf
+```
+
+The rules inside:
 
 ```ini
-# ~/.config/hypr/hyprland.conf
-# Requires Hyprland 0.48+ (unified `windowrule` — `windowrulev2` is deprecated).
-
-# Fullscreen overlay + semi-transparent blur for burst.
+# Requires Hyprland 0.48+ (unified `windowrule`; `windowrulev2` is deprecated).
 windowrule = match:class ^(burst)$, float on
 windowrule = match:class ^(burst)$, size 100% 100%
 windowrule = match:class ^(burst)$, center on
@@ -61,42 +68,140 @@ windowrule = match:class ^(burst)$, no_shadow on
 windowrule = match:class ^(burst)$, stay_focused on
 windowrule = match:class ^(burst)$, dim_around on
 
-# Bind Super+Space to burst-launch, which picks your terminal automatically
-# and passes the right --class / --app-id flag so the rules above match.
-bind = SUPER, Space, exec, burst-launch
+bind = SUPER, Space, exec, burst launch
 
-# Or call your terminal directly if you prefer to pin one:
-# bind = SUPER, Space, exec, alacritty --class=burst -e burst
-# bind = SUPER, Space, exec, wezterm   start --class=burst -- burst
-# bind = SUPER, Space, exec, ghostty   --class=burst -e burst
-# bind = SUPER, Space, exec, kitty     --class=burst burst
-# bind = SUPER, Space, exec, foot      --app-id=burst burst
+# env = TERMINAL,rio
 ```
-
-### Picking the host terminal
-
-`burst-launch` resolves the terminal in this order:
-
-1. `$TERMINAL` if it's set and on `PATH`.
-2. Fallback chain: `alacritty → wezterm → ghostty → kitty → foot` (first found wins).
-
-To pin a specific terminal without editing the script, export `TERMINAL` from your shell rc — for example:
-
-```sh
-# ~/.config/fish/config.fish
-set -x TERMINAL wezterm
-
-# or ~/.bashrc / ~/.zshrc
-export TERMINAL=wezterm
-```
-
-The script knows the correct class/app-id flag for `alacritty`, `wezterm`, `ghostty`, `kitty`, and `foot`; anything else is invoked as `$TERMINAL -e burst` and may need you to pass the flag yourself in your Hyprland bind.
-
-`burst-launch` lives at [`packaging/burst-launch`](packaging/burst-launch). Copy it onto your `$PATH` (e.g. `install -Dm755 packaging/burst-launch ~/.local/bin/burst-launch`) and optionally install [`packaging/burst.desktop`](packaging/burst.desktop) to `~/.local/share/applications/` so burst shows up in desktop-entry consumers.
 
 The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to the transparent regions as long as `decoration:blur:enabled = true` is set globally — terminals render on a transparent-capable background so the blur shows through. `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while burst is open.
 
 Burst renders a fade-in animation on open (configurable timing lives in `src/effects.rs`). Escape closes the overlay.
+
+Optionally install [`packaging/burst.desktop`](packaging/burst.desktop) to `~/.local/share/applications/` so burst shows up in desktop-entry consumers.
+
+### Upgrading from earlier versions
+
+> **Hard break — the Hyprland bind changed.** The old `packaging/burst-launch` shell wrapper has been deleted and replaced by the `burst launch` subcommand built into the binary. If your `hyprland.conf` still contains `bind = SUPER, Space, exec, burst-launch`, change it to `bind = SUPER, Space, exec, burst launch` (space, not dash) or the bind will silently fail after upgrading.
+
+## Terminal resolution
+
+`burst launch` picks the terminal to host the TUI deterministically. First match wins:
+
+1. `terminal.preferred` in your config — each name, in order, is probed on `PATH`.
+2. `$TERMINAL` if it's set and on `PATH`.
+3. `$TERM`, then `$TERM_PROGRAM` (skipped if empty).
+4. `x-terminal-emulator` (symlink-resolved to its real target, e.g. Debian's alternatives system).
+5. The built-in fallback chain: `alacritty → wezterm → ghostty → kitty → foot → rio` (first found wins).
+
+If none of those resolve, `burst launch` exits with a non-zero status and an error on stderr naming the built-in chain.
+
+The `[terminal]` config section controls the first step and the invocation flags for each known emulator:
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `terminal.preferred` | array of strings | `[]` | Ordered preference list. First entry found on `PATH` wins over `$TERMINAL` and every fallback. |
+| `terminal.class` | string | `"burst"` | Substituted into the `{class}` placeholder inside every flag template. Must be non-empty. |
+| `terminal.flags.<name>.args` | array of strings | built-in table | Argv template for emulator `<name>`. Two placeholders are recognised: `{class}` (→ `terminal.class`) and `{cmd}` (→ `burst`). `{cmd}` is required — templates missing it are rejected with a warning and fall back to the built-in. |
+
+The built-in flag table:
+
+```toml
+[terminal.flags.alacritty]
+args = ["--class={class}", "-e", "{cmd}"]
+
+[terminal.flags.wezterm]
+args = ["start", "--class={class}", "--", "{cmd}"]
+
+[terminal.flags.ghostty]
+args = ["--class={class}", "-e", "{cmd}"]
+
+[terminal.flags.kitty]
+args = ["--class={class}", "{cmd}"]
+
+[terminal.flags.foot]
+args = ["--app-id={class}", "{cmd}"]
+
+[terminal.flags.rio]
+args = ["--title={class}", "-e", "{cmd}"]
+```
+
+Any emulator not listed here falls back to `-e {cmd}`, which works for most xterm-style terminals but means the window class may not match the rules above — add an entry under `[terminal.flags.<your-term>]` to fix that.
+
+### Example: pin rio with a custom class
+
+```toml
+[terminal]
+preferred = ["rio", "ghostty"]
+class = "my-launcher"
+
+[terminal.flags.rio]
+args = ["--title={class}", "-e", "{cmd}"]
+```
+
+Remember to update the windowrules in `hyprland-burst.conf` to match the new class (e.g. `match:class ^(my-launcher)$`).
+
+## Customizing the look
+
+Two sections cover everything about how burst renders on screen: `[layout]` controls geometry and `[ui]` controls per-row decoration.
+
+### `[layout]`
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `layout.mode` | string | `"list"` | `"list"` for one entry per row, `"grid"` for column-aware navigation. |
+| `layout.min_column_width` | integer | `20` | Grid-mode only. Cells narrower than this collapse to fewer columns. Must be `>= 1`. |
+| `layout.padding_horizontal` | integer | `0` | Extra columns of whitespace on the left and right. Capped at 32; oversized values warn and fall back. |
+| `layout.padding_vertical` | integer | `0` | Extra rows of whitespace above and below. Capped at 32. |
+| `layout.center_banner` | bool | `false` | Horizontally center the banner inside the available width. |
+| `layout.separator` | bool | `false` | Draw a thin rule between banner/search and the result list. |
+
+### `[ui]`
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `ui.banner` | string | built-in ASCII "burst" | Multi-line TOML string (`"""..."""`). Empty string hides the banner. |
+| `ui.prompt` | string | `"> "` | Printed before the search cursor. |
+| `ui.page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
+| `ui.show_icons` | bool | `true` | Draw a Nerd Font glyph before each app. Disable on non-Nerd-Font terminals. |
+| `ui.selected_marker` | string | `"> "` | Prefix drawn on the selected row. Empty string falls back to the default. |
+| `ui.cursor_char` | string | `"█"` | Single-character cursor glyph after the prompt. Non-single-grapheme values fall back to the default. |
+| `ui.show_cursor` | bool | `true` | Draw the cursor glyph at all. |
+
+### Worked example: centered grid with breathing room
+
+```toml
+[layout]
+mode = "grid"
+min_column_width = 28
+padding_horizontal = 6
+padding_vertical = 2
+center_banner = true
+separator = true
+
+[ui]
+prompt = "λ "
+selected_marker = "▶ "
+cursor_char = "▏"
+show_icons = true
+
+[colors]
+banner   = "#ff79c6"
+prompt   = "light-cyan"
+selected = "#ffb86c"
+```
+
+## Environment variables (via Hyprland)
+
+Burst reads **exactly one environment variable** in v1: `$TERMINAL`. Every other knob lives in `~/.config/burst/config.toml`. `$TERM` and `$TERM_PROGRAM` are consulted only as fallbacks during terminal resolution (see above) and have no effect on the TUI itself.
+
+If you want to pin burst's host terminal without touching your shell rc, set `env` in Hyprland so the variable is exported to every process Hyprland spawns:
+
+```ini
+# ~/.config/hypr/hyprland.conf — or inside hyprland-burst.conf
+env = TERMINAL,rio
+```
+
+For a project-scoped alternative, `terminal.preferred` in the config file wins over `$TERMINAL` anyway, so you can skip the env var entirely when you have a config file.
 
 ## Config
 
@@ -111,15 +216,10 @@ cp config.example.toml ~/.config/burst/config.toml
 
 ### Fields
 
+The `[ui]`, `[layout]`, and `[terminal]` sections are documented in [Customizing the look](#customizing-the-look) and [Terminal resolution](#terminal-resolution). The remaining section controls colors:
+
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `ui.banner` | string | built-in ASCII "burst" | Multi-line TOML string (`"""..."""`). Empty string hides the banner. |
-| `ui.prompt` | string | `"> "` | Printed before the search cursor. |
-| `ui.page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
-| `ui.show_icons` | bool | `true` | Draw a Nerd Font glyph before each app. Disable on non-Nerd-Font terminals. |
-| `ui.selected_marker` | string | `"> "` | Prefix drawn on the selected row. |
-| `ui.cursor_char` | string | `"█"` | Single-character cursor glyph after the prompt. |
-| `ui.show_cursor` | bool | `true` | Draw the cursor glyph at all. |
 | `colors.banner` | color | `magenta` | ASCII banner color. |
 | `colors.prompt` | color | `cyan` | Prompt + cursor color. |
 | `colors.selected` | color | `yellow` | Highlighted entry in the result list. |
