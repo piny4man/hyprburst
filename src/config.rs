@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +21,7 @@ pub struct Config {
     pub prompt: String,
     pub page_size: usize,
     pub colors: Colors,
+    pub terminal: TerminalConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +32,13 @@ pub struct Colors {
     pub empty: Color,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalConfig {
+    pub preferred: Vec<String>,
+    pub class: String,
+    pub flags: BTreeMap<String, Vec<String>>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -37,8 +46,39 @@ impl Default for Config {
             prompt: DEFAULT_PROMPT.to_string(),
             page_size: DEFAULT_PAGE_SIZE,
             colors: Colors::default(),
+            terminal: TerminalConfig::default(),
         }
     }
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            preferred: Vec::new(),
+            class: "burst".to_string(),
+            flags: builtin_flags(),
+        }
+    }
+}
+
+pub(crate) fn builtin_flags() -> BTreeMap<String, Vec<String>> {
+    let entries: &[(&str, &[&str])] = &[
+        ("alacritty", &["--class={class}", "-e", "{cmd}"]),
+        ("wezterm", &["start", "--class={class}", "--", "{cmd}"]),
+        ("ghostty", &["--class={class}", "-e", "{cmd}"]),
+        ("kitty", &["--class={class}", "{cmd}"]),
+        ("foot", &["--app-id={class}", "{cmd}"]),
+        ("rio", &["--title={class}", "-e", "{cmd}"]),
+    ];
+    entries
+        .iter()
+        .map(|(name, args)| {
+            (
+                (*name).to_string(),
+                args.iter().map(|s| (*s).to_string()).collect(),
+            )
+        })
+        .collect()
 }
 
 impl Default for Colors {
@@ -85,13 +125,26 @@ impl Config {
 
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
-            Ok(contents) => Self::from_toml_str(&contents),
+            Ok(contents) => {
+                let (cfg, warnings) = Self::from_toml_str_validating(&contents)?;
+                for warning in warnings {
+                    eprintln!("burst config warning: {}", warning);
+                }
+                Ok(cfg)
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(err) => Err(ConfigError::Io(err)),
         }
     }
 
     pub fn from_toml_str(contents: &str) -> Result<Self, ConfigError> {
+        Self::from_toml_str_validating(contents).map(|(cfg, _)| cfg)
+    }
+
+    /// Parse config and return `(Config, warnings)`. Warnings describe
+    /// recoverable issues (e.g. an invalid terminal flag template) that fall
+    /// back to defaults rather than aborting the load.
+    pub fn from_toml_str_validating(contents: &str) -> Result<(Self, Vec<String>), ConfigError> {
         let raw: RawConfig =
             toml::from_str(contents).map_err(|e| ConfigError::Parse(e.message().to_string()))?;
         raw.into_config()
@@ -119,6 +172,7 @@ struct RawConfig {
     prompt: Option<String>,
     page_size: Option<usize>,
     colors: RawColors,
+    terminal: RawTerminal,
 }
 
 #[derive(Default, Deserialize)]
@@ -130,9 +184,24 @@ struct RawColors {
     empty: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawTerminal {
+    preferred: Option<Vec<String>>,
+    class: Option<String>,
+    flags: Option<BTreeMap<String, RawFlagEntry>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFlagEntry {
+    args: Vec<String>,
+}
+
 impl RawConfig {
-    fn into_config(self) -> Result<Config, ConfigError> {
+    fn into_config(self) -> Result<(Config, Vec<String>), ConfigError> {
         let defaults = Config::default();
+        let mut warnings = Vec::new();
 
         if let Some(size) = self.page_size
             && size == 0
@@ -142,7 +211,7 @@ impl RawConfig {
             ));
         }
 
-        Ok(Config {
+        let cfg = Config {
             banner: self.banner.unwrap_or(defaults.banner),
             prompt: self.prompt.unwrap_or(defaults.prompt),
             page_size: self.page_size.unwrap_or(defaults.page_size),
@@ -156,6 +225,45 @@ impl RawConfig {
                 )?,
                 empty: resolve_color(self.colors.empty, "colors.empty", defaults.colors.empty)?,
             },
+            terminal: self.terminal.into_config(&mut warnings)?,
+        };
+
+        Ok((cfg, warnings))
+    }
+}
+
+impl RawTerminal {
+    fn into_config(self, warnings: &mut Vec<String>) -> Result<TerminalConfig, ConfigError> {
+        let defaults = TerminalConfig::default();
+
+        let class = match self.class {
+            Some(c) if c.trim().is_empty() => {
+                return Err(ConfigError::Validation(
+                    "terminal.class must not be empty".to_string(),
+                ));
+            }
+            Some(c) => c,
+            None => defaults.class,
+        };
+
+        let mut flags = defaults.flags;
+        if let Some(custom) = self.flags {
+            for (name, entry) in custom {
+                if !entry.args.iter().any(|s| s.contains("{cmd}")) {
+                    warnings.push(format!(
+                        "terminal.flags.{} args missing required {{cmd}} placeholder; falling back to built-in defaults",
+                        name
+                    ));
+                    continue;
+                }
+                flags.insert(name, entry.args);
+            }
+        }
+
+        Ok(TerminalConfig {
+            preferred: self.preferred.unwrap_or(defaults.preferred),
+            class,
+            flags,
         })
     }
 }
@@ -406,6 +514,124 @@ empty = "#fff"
 sparkle = "red""#;
         let err = Config::from_toml_str(toml).unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn default_terminal_has_builtin_flag_table() {
+        let cfg = Config::default();
+        assert!(cfg.terminal.preferred.is_empty());
+        assert_eq!(cfg.terminal.class, "burst");
+        for name in ["alacritty", "wezterm", "ghostty", "kitty", "foot", "rio"] {
+            assert!(
+                cfg.terminal.flags.contains_key(name),
+                "missing builtin flag entry for {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn full_terminal_section_round_trips() {
+        let toml = r#"
+[terminal]
+preferred = ["rio", "ghostty"]
+class = "my-launcher"
+
+[terminal.flags.rio]
+args = ["--title={class}", "-e", "{cmd}"]
+
+[terminal.flags.cosmic-term]
+args = ["--class={class}", "-e", "{cmd}"]
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.terminal.preferred, vec!["rio", "ghostty"]);
+        assert_eq!(cfg.terminal.class, "my-launcher");
+        assert_eq!(
+            cfg.terminal.flags.get("cosmic-term").unwrap(),
+            &vec![
+                "--class={class}".to_string(),
+                "-e".to_string(),
+                "{cmd}".to_string()
+            ]
+        );
+        // Built-in entries we didn't override remain present.
+        assert!(cfg.terminal.flags.contains_key("kitty"));
+    }
+
+    #[test]
+    fn partial_terminal_section_uses_defaults() {
+        let toml = r#"
+[terminal]
+preferred = ["rio"]
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.terminal.preferred, vec!["rio"]);
+        assert_eq!(cfg.terminal.class, "burst");
+        // Built-in flag table is preserved when [terminal.flags] is omitted.
+        assert!(cfg.terminal.flags.contains_key("alacritty"));
+    }
+
+    #[test]
+    fn unknown_terminal_field_rejected() {
+        let toml = r#"
+[terminal]
+preferred = ["rio"]
+mystery = "x"
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn unknown_terminal_flags_field_rejected() {
+        let toml = r#"
+[terminal.flags.rio]
+args = ["{cmd}"]
+extra = "bad"
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn empty_terminal_class_rejected() {
+        let toml = r#"
+[terminal]
+class = ""
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn invalid_flag_template_warns_and_falls_back_to_default() {
+        let toml = r#"
+[terminal.flags.alacritty]
+args = ["--class={class}", "--no-cmd-here"]
+"#;
+        let (cfg, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        assert_eq!(warnings.len(), 1, "warnings: {:?}", warnings);
+        assert!(
+            warnings[0].contains("alacritty") && warnings[0].contains("{cmd}"),
+            "unexpected warning: {}",
+            warnings[0]
+        );
+        // Built-in alacritty entry preserved instead of the broken override.
+        let defaults = TerminalConfig::default();
+        assert_eq!(
+            cfg.terminal.flags.get("alacritty"),
+            defaults.flags.get("alacritty")
+        );
+    }
+
+    #[test]
+    fn valid_flag_template_round_trip_emits_no_warnings() {
+        let toml = r#"
+[terminal.flags.alacritty]
+args = ["--class={class}", "-e", "{cmd}"]
+"#;
+        let (_, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
     }
 
     #[test]

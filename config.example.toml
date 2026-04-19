@@ -36,3 +36,37 @@
 # prompt   = "#8be9fd"
 # selected = "#f1fa8c"
 # empty    = "#6272a4"
+
+# Terminal emulator burst should re-exec into when launched headlessly
+# (e.g. via Hyprland bind). All keys are optional.
+#
+# Resolution order (first match on PATH wins):
+#   1. [terminal.preferred] (this list, in order)
+#   2. $TERMINAL
+#   3. $TERM, then $TERM_PROGRAM
+#   4. x-terminal-emulator (symlink resolved to its real target)
+#   5. Built-in chain: alacritty, wezterm, ghostty, kitty, foot, rio
+[terminal]
+# Ordered list of preferred terminal binaries. First one found on PATH wins.
+# preferred = ["rio", "ghostty"]
+
+# Window class / app-id passed to the terminal so Hyprland windowrules can
+# match (e.g. `windowrule = float, class:^(burst)$`). Defaults to "burst".
+# class = "burst"
+
+# Per-terminal argv templates. Override a built-in entry or add a new one for
+# a terminal burst doesn't know about. `{class}` and `{cmd}` are substituted
+# at launch time. The template MUST contain `{cmd}` (the burst binary) — if it
+# doesn't, burst prints a warning to stderr and falls back to the built-in
+# default.
+#
+# Built-in defaults (override only if your terminal needs different flags):
+#   alacritty = ["--class={class}", "-e", "{cmd}"]
+#   wezterm   = ["start", "--class={class}", "--", "{cmd}"]
+#   ghostty   = ["--class={class}", "-e", "{cmd}"]
+#   kitty     = ["--class={class}", "{cmd}"]
+#   foot      = ["--app-id={class}", "{cmd}"]
+#   rio       = ["--title={class}", "-e", "{cmd}"]
+#
+# [terminal.flags.cosmic-term]
+# args = ["--class={class}", "-e", "{cmd}"]

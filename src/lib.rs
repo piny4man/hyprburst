@@ -8,3 +8,4 @@ pub mod input;
 pub mod launcher;
 pub mod search;
 pub mod terminal;
+pub mod terminal_resolver;
