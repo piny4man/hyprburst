@@ -15,15 +15,15 @@ const DEFAULT_BANNER: &str = "\
 const DEFAULT_PROMPT: &str = "> ";
 const DEFAULT_PAGE_SIZE: usize = 10;
 pub(crate) const MAX_PADDING: u16 = 32;
+pub(crate) const DEFAULT_SELECTED_MARKER: &str = "> ";
+pub(crate) const DEFAULT_CURSOR_CHAR: &str = "█";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
-    pub banner: String,
-    pub prompt: String,
-    pub page_size: usize,
     pub colors: Colors,
     pub terminal: TerminalConfig,
     pub layout: LayoutConfig,
+    pub ui: UiConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -32,6 +32,17 @@ pub struct LayoutConfig {
     pub padding_vertical: u16,
     pub center_banner: bool,
     pub separator: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiConfig {
+    pub banner: String,
+    pub prompt: String,
+    pub page_size: usize,
+    pub show_icons: bool,
+    pub selected_marker: String,
+    pub cursor_char: String,
+    pub show_cursor: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,15 +60,16 @@ pub struct TerminalConfig {
     pub flags: BTreeMap<String, Vec<String>>,
 }
 
-impl Default for Config {
+impl Default for UiConfig {
     fn default() -> Self {
         Self {
             banner: DEFAULT_BANNER.to_string(),
             prompt: DEFAULT_PROMPT.to_string(),
             page_size: DEFAULT_PAGE_SIZE,
-            colors: Colors::default(),
-            terminal: TerminalConfig::default(),
-            layout: LayoutConfig::default(),
+            show_icons: true,
+            selected_marker: DEFAULT_SELECTED_MARKER.to_string(),
+            cursor_char: DEFAULT_CURSOR_CHAR.to_string(),
+            show_cursor: true,
         }
     }
 }
@@ -179,12 +191,22 @@ pub fn default_path() -> PathBuf {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawConfig {
-    banner: Option<String>,
-    prompt: Option<String>,
-    page_size: Option<usize>,
     colors: RawColors,
     terminal: RawTerminal,
     layout: RawLayout,
+    ui: RawUi,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawUi {
+    banner: Option<String>,
+    prompt: Option<String>,
+    page_size: Option<usize>,
+    show_icons: Option<bool>,
+    selected_marker: Option<String>,
+    cursor_char: Option<String>,
+    show_cursor: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
@@ -224,18 +246,7 @@ impl RawConfig {
         let defaults = Config::default();
         let mut warnings = Vec::new();
 
-        if let Some(size) = self.page_size
-            && size == 0
-        {
-            return Err(ConfigError::Validation(
-                "page_size must be at least 1".to_string(),
-            ));
-        }
-
         let cfg = Config {
-            banner: self.banner.unwrap_or(defaults.banner),
-            prompt: self.prompt.unwrap_or(defaults.prompt),
-            page_size: self.page_size.unwrap_or(defaults.page_size),
             colors: Colors {
                 banner: resolve_color(self.colors.banner, "colors.banner", defaults.colors.banner)?,
                 prompt: resolve_color(self.colors.prompt, "colors.prompt", defaults.colors.prompt)?,
@@ -248,9 +259,58 @@ impl RawConfig {
             },
             terminal: self.terminal.into_config(&mut warnings)?,
             layout: self.layout.into_config(&mut warnings),
+            ui: self.ui.into_config(&mut warnings)?,
         };
 
         Ok((cfg, warnings))
+    }
+}
+
+impl RawUi {
+    fn into_config(self, warnings: &mut Vec<String>) -> Result<UiConfig, ConfigError> {
+        let defaults = UiConfig::default();
+
+        if let Some(size) = self.page_size
+            && size == 0
+        {
+            return Err(ConfigError::Validation(
+                "ui.page_size must be at least 1".to_string(),
+            ));
+        }
+
+        let selected_marker = match self.selected_marker {
+            Some(s) if s.is_empty() => {
+                warnings.push(format!(
+                    "ui.selected_marker is empty; falling back to default {:?}",
+                    defaults.selected_marker
+                ));
+                defaults.selected_marker.clone()
+            }
+            Some(s) => s,
+            None => defaults.selected_marker.clone(),
+        };
+
+        let cursor_char = match self.cursor_char {
+            Some(s) if s.chars().count() != 1 => {
+                warnings.push(format!(
+                    "ui.cursor_char must be exactly one character, got {:?}; falling back to default {:?}",
+                    s, defaults.cursor_char
+                ));
+                defaults.cursor_char.clone()
+            }
+            Some(s) => s,
+            None => defaults.cursor_char.clone(),
+        };
+
+        Ok(UiConfig {
+            banner: self.banner.unwrap_or(defaults.banner),
+            prompt: self.prompt.unwrap_or(defaults.prompt),
+            page_size: self.page_size.unwrap_or(defaults.page_size),
+            show_icons: self.show_icons.unwrap_or(defaults.show_icons),
+            selected_marker,
+            cursor_char,
+            show_cursor: self.show_cursor.unwrap_or(defaults.show_cursor),
+        })
     }
 }
 
@@ -419,9 +479,9 @@ mod tests {
     #[test]
     fn default_has_sensible_values() {
         let cfg = Config::default();
-        assert!(!cfg.banner.is_empty());
-        assert_eq!(cfg.prompt, "> ");
-        assert_eq!(cfg.page_size, 10);
+        assert!(!cfg.ui.banner.is_empty());
+        assert_eq!(cfg.ui.prompt, "> ");
+        assert_eq!(cfg.ui.page_size, 10);
         assert_eq!(cfg.colors.prompt, Color::Cyan);
         assert_eq!(cfg.colors.selected, Color::Yellow);
     }
@@ -443,6 +503,7 @@ mod tests {
     #[test]
     fn full_toml_overrides_all_fields() {
         let toml = r#"
+[ui]
 banner = "hello"
 prompt = "$ "
 page_size = 5
@@ -454,9 +515,9 @@ selected = "green"
 empty = "white"
 "#;
         let cfg = Config::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.banner, "hello");
-        assert_eq!(cfg.prompt, "$ ");
-        assert_eq!(cfg.page_size, 5);
+        assert_eq!(cfg.ui.banner, "hello");
+        assert_eq!(cfg.ui.prompt, "$ ");
+        assert_eq!(cfg.ui.page_size, 5);
         assert_eq!(cfg.colors.banner, Color::Red);
         assert_eq!(cfg.colors.prompt, Color::Blue);
         assert_eq!(cfg.colors.selected, Color::Green);
@@ -466,15 +527,16 @@ empty = "white"
     #[test]
     fn partial_toml_fills_missing_with_defaults() {
         let toml = r#"
+[ui]
 prompt = "% "
 [colors]
 banner = "red"
 "#;
         let cfg = Config::from_toml_str(toml).unwrap();
         let defaults = Config::default();
-        assert_eq!(cfg.prompt, "% ");
-        assert_eq!(cfg.banner, defaults.banner);
-        assert_eq!(cfg.page_size, defaults.page_size);
+        assert_eq!(cfg.ui.prompt, "% ");
+        assert_eq!(cfg.ui.banner, defaults.ui.banner);
+        assert_eq!(cfg.ui.page_size, defaults.ui.page_size);
         assert_eq!(cfg.colors.banner, Color::Red);
         assert_eq!(cfg.colors.prompt, defaults.colors.prompt);
         assert_eq!(cfg.colors.selected, defaults.colors.selected);
@@ -554,7 +616,11 @@ empty = "#fff"
 
     #[test]
     fn zero_page_size_is_rejected() {
-        let err = Config::from_toml_str("page_size = 0").unwrap_err();
+        let toml = r#"
+[ui]
+page_size = 0
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
         assert!(matches!(err, ConfigError::Validation(_)));
     }
 
@@ -694,16 +760,16 @@ args = ["--class={class}", "-e", "{cmd}"]
     fn load_from_reads_file() {
         let dir = TempDir::new();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, r#"prompt = "$ ""#).unwrap();
+        std::fs::write(&path, "[ui]\nprompt = \"$ \"\n").unwrap();
         let cfg = Config::load_from(&path).unwrap();
-        assert_eq!(cfg.prompt, "$ ");
+        assert_eq!(cfg.ui.prompt, "$ ");
     }
 
     #[test]
     fn load_from_surfaces_parse_errors() {
         let dir = TempDir::new();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "banner = ").unwrap();
+        std::fs::write(&path, "[ui]\nbanner = ").unwrap();
         let err = Config::load_from(&path).unwrap_err();
         assert!(matches!(err, ConfigError::Parse(_)));
     }
@@ -832,6 +898,111 @@ padding_vertical = 33
                 .iter()
                 .any(|w| w.contains("padding_vertical") && w.contains("33"))
         );
+    }
+
+    #[test]
+    fn default_ui_preserves_today_render() {
+        let cfg = Config::default();
+        assert!(cfg.ui.show_icons);
+        assert_eq!(cfg.ui.selected_marker, "> ");
+        assert_eq!(cfg.ui.cursor_char, "█");
+        assert!(cfg.ui.show_cursor);
+    }
+
+    #[test]
+    fn full_ui_section_round_trips() {
+        let toml = r#"
+[ui]
+show_icons = false
+selected_marker = "» "
+cursor_char = "▏"
+show_cursor = false
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert!(!cfg.ui.show_icons);
+        assert_eq!(cfg.ui.selected_marker, "» ");
+        assert_eq!(cfg.ui.cursor_char, "▏");
+        assert!(!cfg.ui.show_cursor);
+    }
+
+    #[test]
+    fn partial_ui_section_fills_missing_with_defaults() {
+        let toml = r#"
+[ui]
+show_icons = false
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        let defaults = UiConfig::default();
+        assert!(!cfg.ui.show_icons);
+        assert_eq!(cfg.ui.selected_marker, defaults.selected_marker);
+        assert_eq!(cfg.ui.cursor_char, defaults.cursor_char);
+        assert_eq!(cfg.ui.show_cursor, defaults.show_cursor);
+    }
+
+    #[test]
+    fn unknown_ui_field_rejected() {
+        let toml = r#"
+[ui]
+mystery = true
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn multi_grapheme_cursor_char_warns_and_falls_back() {
+        let toml = r#"
+[ui]
+cursor_char = "██"
+"#;
+        let (cfg, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        let defaults = UiConfig::default();
+        assert_eq!(cfg.ui.cursor_char, defaults.cursor_char);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("cursor_char") && warnings[0].contains("██"),
+            "unexpected warning: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn empty_cursor_char_warns_and_falls_back() {
+        let toml = r#"
+[ui]
+cursor_char = ""
+"#;
+        let (cfg, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        let defaults = UiConfig::default();
+        assert_eq!(cfg.ui.cursor_char, defaults.cursor_char);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("cursor_char"));
+    }
+
+    #[test]
+    fn empty_selected_marker_warns_and_falls_back() {
+        let toml = r#"
+[ui]
+selected_marker = ""
+"#;
+        let (cfg, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        let defaults = UiConfig::default();
+        assert_eq!(cfg.ui.selected_marker, defaults.selected_marker);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("selected_marker"));
+    }
+
+    #[test]
+    fn valid_ui_section_emits_no_warnings() {
+        let toml = r#"
+[ui]
+show_icons = false
+selected_marker = "▶ "
+cursor_char = "_"
+show_cursor = true
+"#;
+        let (_, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
     }
 
     #[test]
