@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::desktop::{DesktopEntry, discover_apps};
 use crate::history::{History, score as history_score};
 use crate::icon::fallback_glyph;
+use crate::layout::{self, LayoutRects};
 use crate::search::filter_and_rank;
 
 pub struct Launcher {
@@ -152,29 +153,31 @@ fn load_scores(history: &History) -> HashMap<String, f64> {
 
 impl Widget for &mut Launcher {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let banner_lines: Vec<&str> = if self.config.banner.is_empty() {
-            Vec::new()
-        } else {
-            self.config.banner.lines().collect()
-        };
-        let banner_height = (banner_lines.len() as u16).min(area.height);
-        let banner_style = Style::new()
-            .fg(self.config.colors.banner)
-            .add_modifier(Modifier::BOLD);
-        for (i, line) in banner_lines.iter().take(banner_height as usize).enumerate() {
-            buf.set_string(area.x, area.y + i as u16, *line, banner_style);
+        let LayoutRects {
+            banner: banner_area,
+            input: input_area,
+            separator: separator_area,
+            list: list_area,
+        } = layout::compute(area, &self.config);
+
+        if banner_area.height > 0 && !self.config.banner.is_empty() {
+            let banner_style = Style::new()
+                .fg(self.config.colors.banner)
+                .add_modifier(Modifier::BOLD);
+            for (i, line) in self
+                .config
+                .banner
+                .lines()
+                .take(banner_area.height as usize)
+                .enumerate()
+            {
+                buf.set_string(banner_area.x, banner_area.y + i as u16, line, banner_style);
+            }
         }
 
-        let input_y = area.y + banner_height;
-        if input_y >= area.y + area.height {
+        if input_area.height == 0 {
             return;
         }
-        let input_area = Rect {
-            x: area.x,
-            y: input_y,
-            width: area.width,
-            height: 1,
-        };
 
         let prompt_text = format!("{}{}", self.config.prompt, self.query);
         let input_style = Style::new()
@@ -192,16 +195,19 @@ impl Widget for &mut Launcher {
             );
         }
 
-        let list_y = input_y + 1;
-        if list_y >= area.y + area.height {
+        if let Some(sep) = separator_area {
+            let sep_line: String = "─".repeat(sep.width as usize);
+            buf.set_string(
+                sep.x,
+                sep.y,
+                &sep_line,
+                Style::new().fg(self.config.colors.prompt),
+            );
+        }
+
+        if list_area.height == 0 {
             return;
         }
-        let list_area = Rect {
-            x: area.x,
-            y: list_y,
-            width: area.width,
-            height: area.y + area.height - list_y,
-        };
 
         if self.filtered.is_empty() {
             let msg = if self.query.is_empty() {

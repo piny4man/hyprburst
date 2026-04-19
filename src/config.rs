@@ -14,6 +14,7 @@ const DEFAULT_BANNER: &str = "\
 
 const DEFAULT_PROMPT: &str = "> ";
 const DEFAULT_PAGE_SIZE: usize = 10;
+pub(crate) const MAX_PADDING: u16 = 32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -22,6 +23,15 @@ pub struct Config {
     pub page_size: usize,
     pub colors: Colors,
     pub terminal: TerminalConfig,
+    pub layout: LayoutConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LayoutConfig {
+    pub padding_horizontal: u16,
+    pub padding_vertical: u16,
+    pub center_banner: bool,
+    pub separator: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +57,7 @@ impl Default for Config {
             page_size: DEFAULT_PAGE_SIZE,
             colors: Colors::default(),
             terminal: TerminalConfig::default(),
+            layout: LayoutConfig::default(),
         }
     }
 }
@@ -173,6 +184,16 @@ struct RawConfig {
     page_size: Option<usize>,
     colors: RawColors,
     terminal: RawTerminal,
+    layout: RawLayout,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawLayout {
+    padding_horizontal: Option<u16>,
+    padding_vertical: Option<u16>,
+    center_banner: Option<bool>,
+    separator: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
@@ -226,9 +247,44 @@ impl RawConfig {
                 empty: resolve_color(self.colors.empty, "colors.empty", defaults.colors.empty)?,
             },
             terminal: self.terminal.into_config(&mut warnings)?,
+            layout: self.layout.into_config(&mut warnings),
         };
 
         Ok((cfg, warnings))
+    }
+}
+
+impl RawLayout {
+    fn into_config(self, warnings: &mut Vec<String>) -> LayoutConfig {
+        let defaults = LayoutConfig::default();
+        let padding_horizontal = resolve_padding(
+            self.padding_horizontal,
+            "layout.padding_horizontal",
+            warnings,
+        )
+        .unwrap_or(defaults.padding_horizontal);
+        let padding_vertical =
+            resolve_padding(self.padding_vertical, "layout.padding_vertical", warnings)
+                .unwrap_or(defaults.padding_vertical);
+        LayoutConfig {
+            padding_horizontal,
+            padding_vertical,
+            center_banner: self.center_banner.unwrap_or(defaults.center_banner),
+            separator: self.separator.unwrap_or(defaults.separator),
+        }
+    }
+}
+
+fn resolve_padding(value: Option<u16>, field: &str, warnings: &mut Vec<String>) -> Option<u16> {
+    match value {
+        Some(v) if v > MAX_PADDING => {
+            warnings.push(format!(
+                "{} = {} exceeds cap of {}; falling back to default",
+                field, v, MAX_PADDING
+            ));
+            None
+        }
+        other => other,
     }
 }
 
@@ -704,4 +760,90 @@ args = ["--class={class}", "-e", "{cmd}"]
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn default_layout_preserves_today_visuals() {
+        let cfg = Config::default();
+        assert_eq!(cfg.layout.padding_horizontal, 0);
+        assert_eq!(cfg.layout.padding_vertical, 0);
+        assert!(!cfg.layout.center_banner);
+        assert!(!cfg.layout.separator);
+    }
+
+    #[test]
+    fn full_layout_section_round_trips() {
+        let toml = r#"
+[layout]
+padding_horizontal = 4
+padding_vertical = 2
+center_banner = true
+separator = true
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.layout.padding_horizontal, 4);
+        assert_eq!(cfg.layout.padding_vertical, 2);
+        assert!(cfg.layout.center_banner);
+        assert!(cfg.layout.separator);
+    }
+
+    #[test]
+    fn partial_layout_fills_missing_with_defaults() {
+        let toml = r#"
+[layout]
+center_banner = true
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        let defaults = LayoutConfig::default();
+        assert!(cfg.layout.center_banner);
+        assert_eq!(cfg.layout.padding_horizontal, defaults.padding_horizontal);
+        assert_eq!(cfg.layout.padding_vertical, defaults.padding_vertical);
+        assert_eq!(cfg.layout.separator, defaults.separator);
+    }
+
+    #[test]
+    fn unknown_layout_field_rejected() {
+        let toml = r#"
+[layout]
+mystery = true
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn padding_above_cap_warns_and_falls_back_to_default() {
+        let toml = r#"
+[layout]
+padding_horizontal = 9999
+padding_vertical = 33
+"#;
+        let (cfg, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        let defaults = LayoutConfig::default();
+        assert_eq!(cfg.layout.padding_horizontal, defaults.padding_horizontal);
+        assert_eq!(cfg.layout.padding_vertical, defaults.padding_vertical);
+        assert_eq!(warnings.len(), 2, "warnings: {:?}", warnings);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("padding_horizontal") && w.contains("9999"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("padding_vertical") && w.contains("33"))
+        );
+    }
+
+    #[test]
+    fn padding_at_cap_is_accepted_without_warning() {
+        let toml = r#"
+[layout]
+padding_horizontal = 32
+padding_vertical = 32
+"#;
+        let (cfg, warnings) = Config::from_toml_str_validating(toml).unwrap();
+        assert_eq!(cfg.layout.padding_horizontal, 32);
+        assert_eq!(cfg.layout.padding_vertical, 32);
+        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+    }
 }
