@@ -15,14 +15,14 @@ USAGE:
     burst [COMMAND]
 
 COMMANDS:
-    launch    Re-exec burst inside the user's preferred terminal emulator
+    tui       Run the TUI inline in the current terminal (no re-exec)
     help      Print this help message
 
 FLAGS:
     -h, --help           Print this help message
     --bench-startup      Measure config-load + App::new latency and exit
 
-With no command, burst runs the TUI in the current terminal.
+With no command, burst re-execs into the user's preferred terminal emulator.
 ";
 
 fn load_config_for_tui() -> Config {
@@ -101,7 +101,7 @@ fn run_launch() -> ! {
     let config = match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("burst launch: config parse failed: {}", err);
+            eprintln!("burst: config parse failed: {}", err);
             std::process::exit(1);
         }
     };
@@ -110,14 +110,14 @@ fn run_launch() -> ! {
     let resolved = match terminal_resolver::resolve(&config, &env, &SystemPathProbe) {
         Ok(r) => r,
         Err(err @ ResolveError::NoTerminalFound) => {
-            eprintln!("burst launch: {}", err);
+            eprintln!("burst: {}", err);
             std::process::exit(1);
         }
     };
 
     let err = Command::new(&resolved.binary).args(&resolved.argv).exec();
     eprintln!(
-        "burst launch: failed to exec {} {}: {}",
+        "burst: failed to exec {} {}: {}",
         resolved.binary,
         resolved.argv.join(" "),
         err
@@ -133,8 +133,8 @@ fn main() -> io::Result<()> {
     }
 
     match args.first().map(String::as_str) {
-        None => run_tui(),
-        Some("launch") => run_launch(),
+        None => run_launch(),
+        Some("tui") => run_tui(),
         Some("help" | "--help" | "-h") => {
             print!("{}", HELP);
             Ok(())

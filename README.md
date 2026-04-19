@@ -31,9 +31,8 @@ burst/
 │   ├── layout.rs             # Pure layout geometry (list + grid modes)
 │   ├── search.rs             # Hybrid fuzzy/prefix ranking
 │   ├── terminal.rs           # Terminal lifecycle (raw mode, alternate screen, panic restore)
-│   └── terminal_resolver.rs  # Deterministic host-terminal resolution for `burst launch`
+│   └── terminal_resolver.rs  # Deterministic host-terminal resolution for bare `burst`
 ├── packaging/
-│   ├── burst.desktop         # Desktop entry (StartupWMClass=burst)
 │   └── hyprland-burst.conf   # Drop-in Hyprland config: windowrules + Super+Space bind
 ├── .github/workflows/
 │   └── ci.yml           # Pull request CI: fmt, clippy, tests
@@ -47,7 +46,7 @@ burst/
 
 ## Hyprland Setup
 
-Burst is a terminal UI, so the Hyprland window class belongs to the terminal that hosts it. A ready-to-use config lives at [`packaging/hyprland-burst.conf`](packaging/hyprland-burst.conf) — it contains the windowrules that target the `burst` class and a `Super+Space` bind that runs `burst launch` (the built-in subcommand that resolves a terminal and re-execs burst inside it with the right class flag).
+Burst is a terminal UI, so the Hyprland window class belongs to the terminal that hosts it. A ready-to-use config lives at [`packaging/hyprland-burst.conf`](packaging/hyprland-burst.conf) — it contains the windowrules that target the `burst` class and a `Super+Space` bind that runs `burst`, which resolves a terminal and re-execs itself inside it with the right class flag. (Use `burst tui` if you want to run inline in the current terminal instead.)
 
 ```sh
 # Drop the config next to hyprland.conf and source it.
@@ -68,7 +67,7 @@ windowrule = match:class ^(burst)$, no_shadow on
 windowrule = match:class ^(burst)$, stay_focused on
 windowrule = match:class ^(burst)$, dim_around on
 
-bind = SUPER, Space, exec, burst launch
+bind = SUPER, Space, exec, burst
 
 # env = TERMINAL,rio
 ```
@@ -77,15 +76,13 @@ The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background b
 
 Burst renders a fade-in animation on open (configurable timing lives in `src/effects.rs`). Escape closes the overlay.
 
-Optionally install [`packaging/burst.desktop`](packaging/burst.desktop) to `~/.local/share/applications/` so burst shows up in desktop-entry consumers.
-
 ### Upgrading from earlier versions
 
-> **Hard break — the Hyprland bind changed.** The old `packaging/burst-launch` shell wrapper has been deleted and replaced by the `burst launch` subcommand built into the binary. If your `hyprland.conf` still contains `bind = SUPER, Space, exec, burst-launch`, change it to `bind = SUPER, Space, exec, burst launch` (space, not dash) or the bind will silently fail after upgrading.
+> **Hard break — the `launch` subcommand is gone.** Running bare `burst` now re-execs into the resolved terminal (previously: `burst launch`), and `burst tui` runs inline in the current terminal (previously: bare `burst`). Update your Hyprland bind to `bind = SUPER, Space, exec, burst` or the launcher will fail when invoked from a graphical context with no controlling terminal.
 
 ## Terminal resolution
 
-`burst launch` picks the terminal to host the TUI deterministically. First match wins:
+Bare `burst` picks the terminal to host the TUI deterministically. First match wins:
 
 1. `terminal.preferred` in your config — each name, in order, is probed on `PATH`.
 2. `$TERMINAL` if it's set and on `PATH`.
@@ -93,7 +90,7 @@ Optionally install [`packaging/burst.desktop`](packaging/burst.desktop) to `~/.l
 4. `x-terminal-emulator` (symlink-resolved to its real target, e.g. Debian's alternatives system).
 5. The built-in fallback chain: `alacritty → wezterm → ghostty → kitty → foot → rio` (first found wins).
 
-If none of those resolve, `burst launch` exits with a non-zero status and an error on stderr naming the built-in chain.
+If none of those resolve, `burst` exits with a non-zero status and an error on stderr naming the built-in chain.
 
 The `[terminal]` config section controls the first step and the invocation flags for each known emulator:
 
