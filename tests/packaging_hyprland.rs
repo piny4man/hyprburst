@@ -1,8 +1,8 @@
 //! Golden-file test for `packaging/hyprland-burst.conf`.
 //!
 //! Fails CI if the shipped Hyprland config drifts from the documentation —
-//! every windowrule promised in the README, the `burst launch` bind, and
-//! the commented `env = TERMINAL,rio` example must all be present.
+//! every windowrule promised in the README, the `burst` bind, and the
+//! commented `env = TERMINAL,rio` example must all be present.
 
 use std::path::PathBuf;
 
@@ -34,11 +34,12 @@ fn contains_all_documented_windowrules() {
 }
 
 #[test]
-fn contains_burst_launch_bind() {
+fn contains_burst_bind() {
     let conf = load_conf();
     assert!(
-        conf.contains("bind = SUPER, Space, exec, burst launch"),
-        "hyprland-burst.conf missing `bind = SUPER, Space, exec, burst launch` — the v1 Hyprland bind"
+        conf.lines()
+            .any(|l| l.trim() == "bind = SUPER, Space, exec, burst"),
+        "hyprland-burst.conf missing `bind = SUPER, Space, exec, burst` — the Hyprland bind"
     );
 }
 
@@ -48,6 +49,18 @@ fn does_not_reference_removed_burst_launch_wrapper() {
     assert!(
         !conf.contains("burst-launch"),
         "hyprland-burst.conf still references the removed `burst-launch` shell wrapper"
+    );
+}
+
+#[test]
+fn does_not_bind_to_removed_launch_subcommand() {
+    let conf = load_conf();
+    assert!(
+        !conf.lines().any(|l| {
+            let t = l.trim_start();
+            !t.starts_with('#') && t.contains("burst launch")
+        }),
+        "hyprland-burst.conf still invokes the removed `burst launch` subcommand — use bare `burst`"
     );
 }
 
