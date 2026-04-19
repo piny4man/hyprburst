@@ -9,7 +9,7 @@ Burst lives inside your terminal emulator with a semi-transparent blurred backgr
 - **Modern terminal aesthetic** — Clean monospace, subtle accent colors, custom ASCII art banners
 - **Fast** — <50ms startup, instant search results as you type
 - **Smart ranking** — Results ranked by recency (exponential decay) + frequency (launch count)
-- **Icon grid** — Apps displayed with icons via kitty graphics protocol, sixel, or unicode/emoji fallback
+- **Icon grid** — Apps displayed with monochrome [Nerd Font](https://www.nerdfonts.com/) glyphs matched by category (browser, terminal, editor, etc.)
 - **SQLite history** — Tracks launch history for smarter results and usage stats
 - **TOML config** — Customizable colors, banner, and settings at `~/.config/burst/config.toml`
 - **Hyprland native** — Launches apps via `hyprctl dispatch exec`
@@ -25,16 +25,23 @@ burst/
 │   ├── desktop.rs       # .desktop file discovery and parsing
 │   ├── effects.rs       # Fade-in animation via tachyonfx
 │   ├── history.rs       # SQLite-backed launch history
-│   ├── icon.rs          # Terminal capability + emoji icon fallback
+│   ├── icon.rs          # Nerd Font glyph mapping by keyword (browser, terminal, editor, ...)
 │   ├── input.rs         # Keyboard input handling and event polling
 │   ├── launcher.rs      # Launcher state, filtering, Hyprland dispatch
 │   ├── search.rs        # Hybrid fuzzy/prefix ranking
 │   └── terminal.rs      # Terminal lifecycle (raw mode, alternate screen, panic restore)
+├── packaging/
+│   ├── burst-launch     # Shell wrapper that execs burst inside the user's terminal
+│   └── burst.desktop    # Desktop entry (StartupWMClass=burst)
 ├── .github/workflows/
 │   └── ci.yml           # Pull request CI: fmt, clippy, tests
 ├── Cargo.toml
 └── Cargo.lock
 ```
+
+## Requirements
+
+- **Nerd Font** — burst renders entry icons as Nerd Font glyphs in the private-use Unicode area. The hosting terminal must use a [Nerd Font](https://www.nerdfonts.com/) (e.g. `JetBrainsMono Nerd Font`, `FiraCode Nerd Font`, `Symbols Nerd Font`) or the icons will show as tofu squares.
 
 ## Hyprland Setup
 
@@ -54,13 +61,38 @@ windowrule = match:class ^(burst)$, no_shadow on
 windowrule = match:class ^(burst)$, stay_focused on
 windowrule = match:class ^(burst)$, dim_around on
 
-# Bind Super+Space to open burst in a terminal with the burst class.
-# Examples — pick the one matching your terminal:
-bind = SUPER, Space, exec, kitty  --class burst -e burst
-# bind = SUPER, Space, exec, foot  --app-id burst       -- burst
-# bind = SUPER, Space, exec, alacritty --class burst    -e burst
-# bind = SUPER, Space, exec, wezterm start --class burst -- burst
+# Bind Super+Space to burst-launch, which picks your terminal automatically
+# and passes the right --class / --app-id flag so the rules above match.
+bind = SUPER, Space, exec, burst-launch
+
+# Or call your terminal directly if you prefer to pin one:
+# bind = SUPER, Space, exec, alacritty --class=burst -e burst
+# bind = SUPER, Space, exec, wezterm   start --class=burst -- burst
+# bind = SUPER, Space, exec, ghostty   --class=burst -e burst
+# bind = SUPER, Space, exec, kitty     --class=burst burst
+# bind = SUPER, Space, exec, foot      --app-id=burst burst
 ```
+
+### Picking the host terminal
+
+`burst-launch` resolves the terminal in this order:
+
+1. `$TERMINAL` if it's set and on `PATH`.
+2. Fallback chain: `alacritty → wezterm → ghostty → kitty → foot` (first found wins).
+
+To pin a specific terminal without editing the script, export `TERMINAL` from your shell rc — for example:
+
+```sh
+# ~/.config/fish/config.fish
+set -x TERMINAL wezterm
+
+# or ~/.bashrc / ~/.zshrc
+export TERMINAL=wezterm
+```
+
+The script knows the correct class/app-id flag for `alacritty`, `wezterm`, `ghostty`, `kitty`, and `foot`; anything else is invoked as `$TERMINAL -e burst` and may need you to pass the flag yourself in your Hyprland bind.
+
+`burst-launch` lives at [`packaging/burst-launch`](packaging/burst-launch). Copy it onto your `$PATH` (e.g. `install -Dm755 packaging/burst-launch ~/.local/bin/burst-launch`) and optionally install [`packaging/burst.desktop`](packaging/burst.desktop) to `~/.local/share/applications/` so burst shows up in desktop-entry consumers.
 
 The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to the transparent regions as long as `decoration:blur:enabled = true` is set globally — terminals render on a transparent-capable background so the blur shows through. `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while burst is open.
 
@@ -150,7 +182,7 @@ cargo build --release
 ./target/release/burst --bench-startup
 ```
 
-This times the complete cold path — config load, `.desktop` discovery, history open, icon-capability detection — and prints peak resident-set size. On a reference Arch + Hyprland machine the output is:
+This times the complete cold path — config load, `.desktop` discovery, history open — and prints peak resident-set size. On a reference Arch + Hyprland machine the output is:
 
 ```
 burst startup: ~4ms
@@ -158,6 +190,8 @@ burst peak RSS: ~5 MB
 ```
 
 Both well under the <50ms startup budget and minimal-memory goal.
+
+CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startup.rs` — generous headroom over the ~50ms local goal so shared CI runners don't flake. If the test ever does flake, it will be moved behind `#[ignore]` and run via `cargo test -- --ignored` as an opt-in lane.
 
 ## License
 

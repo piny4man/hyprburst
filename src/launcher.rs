@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ratatui::crossterm::event::KeyCode;
 use ratatui::prelude::*;
 
 use crate::config::Config;
 use crate::desktop::{DesktopEntry, discover_apps};
 use crate::history::{History, score as history_score};
-use crate::icon::{TerminalCapability, detect_capability, fallback_glyph};
+use crate::icon::fallback_glyph;
 use crate::search::filter_and_rank;
 
 pub struct Launcher {
@@ -18,7 +19,6 @@ pub struct Launcher {
     pub running: bool,
     pub(crate) history: Option<History>,
     pub(crate) scores: HashMap<String, f64>,
-    pub(crate) capability: TerminalCapability,
     pub(crate) config: Config,
 }
 
@@ -36,70 +36,46 @@ impl Launcher {
             running,
             history,
             scores,
-            capability: detect_capability(),
             config,
         };
         launcher.rebuild_filtered();
         launcher
     }
 
-    pub fn handle_event(&mut self, event: &crossterm::event::Event) {
+    pub fn handle_key(&mut self, code: KeyCode) {
         if !self.running {
             return;
         }
 
-        if crate::input::is_escape(event) {
-            self.running = false;
-            return;
-        }
-
-        if crate::input::is_tab(event) {
-            self.autocomplete();
-            return;
-        }
-
-        if crate::input::is_page_up(event) {
-            self.page_up();
-            return;
-        }
-
-        if crate::input::is_page_down(event) {
-            self.page_down();
-            return;
-        }
-
-        if crate::input::is_up(event) {
-            if self.selected_index == 0 {
-                self.selected_index = self.filtered.len().saturating_sub(1);
-            } else {
-                self.selected_index = self.selected_index.saturating_sub(1);
+        match code {
+            KeyCode::Esc => self.running = false,
+            KeyCode::Tab => self.autocomplete(),
+            KeyCode::PageUp => self.page_up(),
+            KeyCode::PageDown => self.page_down(),
+            KeyCode::Up => {
+                if self.selected_index == 0 {
+                    self.selected_index = self.filtered.len().saturating_sub(1);
+                } else {
+                    self.selected_index = self.selected_index.saturating_sub(1);
+                }
             }
-            return;
-        }
-
-        if crate::input::is_down(event) {
-            if self.selected_index + 1 >= self.filtered.len() {
-                self.selected_index = 0;
-            } else {
-                self.selected_index += 1;
+            KeyCode::Down => {
+                if self.selected_index + 1 >= self.filtered.len() {
+                    self.selected_index = 0;
+                } else {
+                    self.selected_index += 1;
+                }
             }
-            return;
-        }
-
-        if crate::input::is_enter(event) {
-            self.launch_selected();
-            return;
-        }
-
-        if crate::input::is_backspace(event) {
-            self.query.pop();
-            self.rebuild_filtered();
-            return;
-        }
-
-        if let Some(c) = crate::input::char_from_event(event) {
-            self.query.push(c);
-            self.rebuild_filtered();
+            KeyCode::Enter => self.launch_selected(),
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.rebuild_filtered();
+            }
+            KeyCode::Char(c) => {
+                self.query.push(c);
+                self.rebuild_filtered();
+            }
+            _ => {}
         }
     }
 
@@ -157,7 +133,7 @@ impl Launcher {
     }
 }
 
-pub(crate) fn icon_glyph_for(app: &DesktopEntry, _capability: TerminalCapability) -> &'static str {
+pub(crate) fn icon_glyph_for(app: &DesktopEntry) -> &'static str {
     fallback_glyph(&app.icon, &app.name)
 }
 
@@ -255,7 +231,7 @@ impl Widget for &mut Launcher {
             };
 
             let app = &self.apps[idx];
-            let glyph = icon_glyph_for(app, self.capability);
+            let glyph = icon_glyph_for(app);
             let line = format!("{}{} {}", prefix, glyph, app.name);
             buf.set_string(list_area.x, y, &line, style);
         }
@@ -265,16 +241,6 @@ impl Widget for &mut Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
-
-    fn make_key_event(code: KeyCode) -> Event {
-        Event::Key(KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        })
-    }
 
     fn make_launcher_with_apps() -> Launcher {
         Launcher {
@@ -304,7 +270,6 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
-            capability: TerminalCapability::Fallback,
             config: Config::default(),
         }
     }
@@ -312,8 +277,7 @@ mod tests {
     #[test]
     fn down_key_moves_selection_down() {
         let mut launcher = make_launcher_with_apps();
-        let event = make_key_event(KeyCode::Down);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Down);
         assert_eq!(launcher.selected_index, 1);
     }
 
@@ -321,8 +285,7 @@ mod tests {
     fn up_key_moves_selection_up() {
         let mut launcher = make_launcher_with_apps();
         launcher.selected_index = 1;
-        let event = make_key_event(KeyCode::Up);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Up);
         assert_eq!(launcher.selected_index, 0);
     }
 
@@ -330,8 +293,7 @@ mod tests {
     fn down_wraps_to_first() {
         let mut launcher = make_launcher_with_apps();
         launcher.selected_index = 2;
-        let event = make_key_event(KeyCode::Down);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Down);
         assert_eq!(launcher.selected_index, 0);
     }
 
@@ -339,32 +301,28 @@ mod tests {
     fn up_wraps_to_last() {
         let mut launcher = make_launcher_with_apps();
         launcher.selected_index = 0;
-        let event = make_key_event(KeyCode::Up);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Up);
         assert_eq!(launcher.selected_index, 2);
     }
 
     #[test]
     fn enter_stops_launcher() {
         let mut launcher = make_launcher_with_apps();
-        let event = make_key_event(KeyCode::Enter);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Enter);
         assert!(!launcher.running);
     }
 
     #[test]
     fn escape_stops_launcher() {
         let mut launcher = make_launcher_with_apps();
-        let event = make_key_event(KeyCode::Esc);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Esc);
         assert!(!launcher.running);
     }
 
     #[test]
     fn typing_filters_results() {
         let mut launcher = make_launcher_with_apps();
-        let event = make_key_event(KeyCode::Char('a'));
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Char('a'));
         assert_eq!(launcher.query, "a");
         assert!(!launcher.filtered.is_empty());
     }
@@ -373,26 +331,22 @@ mod tests {
     fn backspace_removes_char() {
         let mut launcher = make_launcher_with_apps();
         launcher.query = "a".into();
-        let event = make_key_event(KeyCode::Backspace);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Backspace);
         assert_eq!(launcher.query, "");
     }
 
     #[test]
     fn tab_autocompletes_top_match() {
         let mut launcher = make_launcher_with_apps();
-        let event = make_key_event(KeyCode::Char('a'));
-        launcher.handle_event(&event);
-        let event = make_key_event(KeyCode::Tab);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Char('a'));
+        launcher.handle_key(KeyCode::Tab);
         assert!(!launcher.query.is_empty());
     }
 
     #[test]
     fn page_down_moves_selection_down() {
         let mut launcher = make_launcher_with_apps();
-        let event = make_key_event(KeyCode::PageDown);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::PageDown);
         assert_eq!(launcher.selected_index, 10.min(launcher.filtered.len() - 1));
     }
 
@@ -400,8 +354,7 @@ mod tests {
     fn page_up_moves_selection_up() {
         let mut launcher = make_launcher_with_apps();
         launcher.selected_index = 15;
-        let event = make_key_event(KeyCode::PageUp);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::PageUp);
         assert_eq!(launcher.selected_index, 5);
     }
 
@@ -415,19 +368,16 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
-            capability: TerminalCapability::Fallback,
             config: Config::default(),
         };
-        let event = make_key_event(KeyCode::Esc);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Esc);
         assert!(!launcher.running);
     }
 
     #[test]
     fn search_rebuilds_filtered_on_typing() {
         let mut launcher = make_launcher_with_apps();
-        let event = make_key_event(KeyCode::Char('A'));
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Char('A'));
         assert_eq!(launcher.query, "A");
         assert!(launcher.selected_index == 0);
     }
@@ -438,8 +388,7 @@ mod tests {
         let mut launcher = make_launcher_with_apps();
         launcher.history = Some(history);
 
-        let event = make_key_event(KeyCode::Enter);
-        launcher.handle_event(&event);
+        launcher.handle_key(KeyCode::Enter);
 
         let entry = launcher
             .history
@@ -453,27 +402,14 @@ mod tests {
     }
 
     #[test]
-    fn icon_glyph_maps_known_app_to_emoji() {
+    fn icon_glyph_maps_known_app_to_nerd_font() {
         let app = DesktopEntry {
             id: "firefox".into(),
             name: "Firefox".into(),
             icon: "firefox".into(),
             exec: "firefox".into(),
         };
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Fallback), "🦊");
-    }
-
-    #[test]
-    fn icon_glyph_is_capability_independent_for_fallback_rendering() {
-        let app = DesktopEntry {
-            id: "terminal".into(),
-            name: "Terminal".into(),
-            icon: "utilities-terminal".into(),
-            exec: "xterm".into(),
-        };
-        let expected = icon_glyph_for(&app, TerminalCapability::Fallback);
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Kitty), expected);
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Sixel), expected);
+        assert_eq!(icon_glyph_for(&app), "\u{f269}");
     }
 
     #[test]
@@ -484,7 +420,7 @@ mod tests {
             icon: "zzz".into(),
             exec: "qwerty".into(),
         };
-        assert_eq!(icon_glyph_for(&app, TerminalCapability::Fallback), "📦");
+        assert_eq!(icon_glyph_for(&app), "\u{f1b2}");
     }
 
     #[test]
@@ -503,7 +439,6 @@ mod tests {
             running: true,
             history: None,
             scores: std::collections::HashMap::new(),
-            capability: TerminalCapability::Fallback,
             config: Config {
                 banner: String::new(),
                 ..Config::default()
@@ -517,8 +452,8 @@ mod tests {
             .map(|x| buf[(x, 1)].symbol().to_string())
             .collect::<String>();
         assert!(
-            row.contains("🦊") && row.contains("Firefox"),
-            "expected emoji and name on row, got {:?}",
+            row.contains("\u{f269}") && row.contains("Firefox"),
+            "expected nerd font glyph and name on row, got {:?}",
             row
         );
     }
