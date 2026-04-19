@@ -106,7 +106,7 @@ impl Launcher {
         if self.filtered.is_empty() {
             return;
         }
-        self.selected_index = self.selected_index.saturating_sub(self.config.page_size);
+        self.selected_index = self.selected_index.saturating_sub(self.config.ui.page_size);
     }
 
     fn page_down(&mut self) {
@@ -114,7 +114,7 @@ impl Launcher {
             return;
         }
         self.selected_index =
-            (self.selected_index + self.config.page_size).min(self.filtered.len() - 1);
+            (self.selected_index + self.config.ui.page_size).min(self.filtered.len() - 1);
     }
 
     fn launch_selected(&mut self) {
@@ -160,12 +160,13 @@ impl Widget for &mut Launcher {
             list: list_area,
         } = layout::compute(area, &self.config);
 
-        if banner_area.height > 0 && !self.config.banner.is_empty() {
+        if banner_area.height > 0 && !self.config.ui.banner.is_empty() {
             let banner_style = Style::new()
                 .fg(self.config.colors.banner)
                 .add_modifier(Modifier::BOLD);
             for (i, line) in self
                 .config
+                .ui
                 .banner
                 .lines()
                 .take(banner_area.height as usize)
@@ -179,20 +180,22 @@ impl Widget for &mut Launcher {
             return;
         }
 
-        let prompt_text = format!("{}{}", self.config.prompt, self.query);
+        let prompt_text = format!("{}{}", self.config.ui.prompt, self.query);
         let input_style = Style::new()
             .fg(self.config.colors.prompt)
             .add_modifier(Modifier::BOLD);
         buf.set_string(input_area.x, input_area.y, &prompt_text, input_style);
 
-        let cursor_x = input_area.x + prompt_text.chars().count() as u16;
-        if cursor_x < input_area.x + input_area.width {
-            buf.set_string(
-                cursor_x,
-                input_area.y,
-                "█",
-                Style::new().fg(self.config.colors.prompt),
-            );
+        if self.config.ui.show_cursor {
+            let cursor_x = input_area.x + prompt_text.chars().count() as u16;
+            if cursor_x < input_area.x + input_area.width {
+                buf.set_string(
+                    cursor_x,
+                    input_area.y,
+                    &self.config.ui.cursor_char,
+                    Style::new().fg(self.config.colors.prompt),
+                );
+            }
         }
 
         if let Some(sep) = separator_area {
@@ -220,6 +223,10 @@ impl Widget for &mut Launcher {
             return;
         }
 
+        let marker = self.config.ui.selected_marker.as_str();
+        let marker_width = marker.chars().count();
+        let unselected_prefix: String = " ".repeat(marker_width);
+
         for (i, &(idx, _score)) in self.filtered.iter().enumerate() {
             if i as u16 >= list_area.height {
                 break;
@@ -227,7 +234,7 @@ impl Widget for &mut Launcher {
 
             let y = list_area.y + i as u16;
             let selected = i == self.selected_index;
-            let prefix = if selected { "> " } else { "  " };
+            let prefix: &str = if selected { marker } else { &unselected_prefix };
             let style = if selected {
                 Style::new()
                     .fg(self.config.colors.selected)
@@ -237,8 +244,12 @@ impl Widget for &mut Launcher {
             };
 
             let app = &self.apps[idx];
-            let glyph = icon_glyph_for(app);
-            let line = format!("{}{} {}", prefix, glyph, app.name);
+            let line = if self.config.ui.show_icons {
+                let glyph = icon_glyph_for(app);
+                format!("{}{} {}", prefix, glyph, app.name)
+            } else {
+                format!("{}{}", prefix, app.name)
+            };
             buf.set_string(list_area.x, y, &line, style);
         }
     }
@@ -247,6 +258,7 @@ impl Widget for &mut Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::UiConfig;
 
     fn make_launcher_with_apps() -> Launcher {
         Launcher {
@@ -446,7 +458,10 @@ mod tests {
             history: None,
             scores: std::collections::HashMap::new(),
             config: Config {
-                banner: String::new(),
+                ui: UiConfig {
+                    banner: String::new(),
+                    ..UiConfig::default()
+                },
                 ..Config::default()
             },
         };
@@ -460,6 +475,127 @@ mod tests {
         assert!(
             row.contains("\u{f269}") && row.contains("Firefox"),
             "expected nerd font glyph and name on row, got {:?}",
+            row
+        );
+    }
+
+    fn launcher_with_single_app(config: Config) -> Launcher {
+        let app = DesktopEntry {
+            id: "firefox".into(),
+            name: "Firefox".into(),
+            icon: "firefox".into(),
+            exec: "firefox".into(),
+        };
+        Launcher {
+            apps: vec![app],
+            query: String::new(),
+            filtered: vec![(0, 0)],
+            selected_index: 0,
+            running: true,
+            history: None,
+            scores: std::collections::HashMap::new(),
+            config,
+        }
+    }
+
+    fn row_at(buf: &Buffer, y: u16, area: Rect) -> String {
+        (0..area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn render_hides_icons_when_show_icons_false() {
+        let cfg = Config {
+            ui: UiConfig {
+                banner: String::new(),
+                show_icons: false,
+                ..UiConfig::default()
+            },
+            ..Config::default()
+        };
+        let mut launcher = launcher_with_single_app(cfg);
+
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+        (&mut launcher).render(area, &mut buf);
+
+        let row = row_at(&buf, 1, area);
+        assert!(
+            !row.contains('\u{f269}') && row.contains("Firefox"),
+            "icon glyph should be suppressed, got {:?}",
+            row
+        );
+    }
+
+    #[test]
+    fn render_uses_custom_selected_marker() {
+        let cfg = Config {
+            ui: UiConfig {
+                banner: String::new(),
+                selected_marker: "» ".into(),
+                ..UiConfig::default()
+            },
+            ..Config::default()
+        };
+        let mut launcher = launcher_with_single_app(cfg);
+
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+        (&mut launcher).render(area, &mut buf);
+
+        let row = row_at(&buf, 1, area);
+        assert!(
+            row.contains("» ") && row.contains("Firefox"),
+            "expected custom marker on selected row, got {:?}",
+            row
+        );
+    }
+
+    #[test]
+    fn render_hides_cursor_when_show_cursor_false() {
+        let cfg = Config {
+            ui: UiConfig {
+                banner: String::new(),
+                show_cursor: false,
+                ..UiConfig::default()
+            },
+            ..Config::default()
+        };
+        let mut launcher = launcher_with_single_app(cfg);
+
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+        (&mut launcher).render(area, &mut buf);
+
+        let row = row_at(&buf, 0, area);
+        assert!(
+            !row.contains('█'),
+            "cursor glyph should be suppressed, got {:?}",
+            row
+        );
+    }
+
+    #[test]
+    fn render_uses_custom_cursor_char() {
+        let cfg = Config {
+            ui: UiConfig {
+                banner: String::new(),
+                cursor_char: "▏".into(),
+                ..UiConfig::default()
+            },
+            ..Config::default()
+        };
+        let mut launcher = launcher_with_single_app(cfg);
+
+        let area = Rect::new(0, 0, 40, 5);
+        let mut buf = Buffer::empty(area);
+        (&mut launcher).render(area, &mut buf);
+
+        let row = row_at(&buf, 0, area);
+        assert!(
+            row.contains('▏') && !row.contains('█'),
+            "expected custom cursor glyph, got {:?}",
             row
         );
     }

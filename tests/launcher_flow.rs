@@ -3,7 +3,7 @@
 //! interacting with the launcher would see it.
 
 use burst::app::App;
-use burst::config::Config;
+use burst::config::{Config, UiConfig};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
@@ -55,7 +55,10 @@ fn default_banner_renders_at_top_of_frame() {
 
 fn no_banner_config() -> Config {
     Config {
-        banner: String::new(),
+        ui: UiConfig {
+            banner: String::new(),
+            ..UiConfig::default()
+        },
         ..Config::default()
     }
 }
@@ -63,7 +66,10 @@ fn no_banner_config() -> Config {
 #[test]
 fn custom_banner_overrides_default() {
     let cfg = Config {
-        banner: "CUSTOM-BANNER".to_string(),
+        ui: UiConfig {
+            banner: "CUSTOM-BANNER".to_string(),
+            ..UiConfig::default()
+        },
         ..Config::default()
     };
     let mut app = App::new(cfg);

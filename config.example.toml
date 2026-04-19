@@ -2,22 +2,6 @@
 # Every field is optional; omitted keys fall back to the built-in defaults.
 # Unknown keys are rejected so typos surface loudly instead of being silently ignored.
 
-# Multi-line ASCII banner shown above the prompt. Use a TOML multi-line string ("""...""")
-# to preserve newlines. Set to "" to hide the banner.
-# banner = """
-#  _                    _
-# | |__  _   _ _ __ ___| |_
-# | '_ \| | | | '__/ __| __|
-# | |_) | |_| | |  \__ \ |_
-# |_.__/ \__,_|_|  |___/\__|
-# """
-
-# String printed before the search cursor.
-# prompt = "> "
-
-# Number of entries shown per page (PageUp/PageDown step size). Must be >= 1.
-# page_size = 10
-
 # Colors accept either a named color or a 6-digit hex string ("#RRGGBB").
 #
 # Named colors (case-insensitive, dashes/underscores ignored):
@@ -87,3 +71,39 @@
 
 # Draw a single-row separator line between the prompt and the result list.
 # separator = false
+
+# UI chrome — banner, prompt, paging, icons, selection marker, and cursor glyph.
+# Defaults preserve today's render. Invalid values (multi-char cursor_char,
+# empty selected_marker, page_size = 0) print a stderr warning and fall back
+# to defaults (page_size = 0 is a hard error).
+[ui]
+# Multi-line ASCII banner shown above the prompt. Use a TOML multi-line string
+# ("""...""") to preserve newlines. Set to "" to hide the banner.
+# banner = """
+#  _                    _
+# | |__  _   _ _ __ ___| |_
+# | '_ \| | | | '__/ __| __|
+# | |_) | |_| | |  \__ \ |_
+# |_.__/ \__,_|_|  |___/\__|
+# """
+
+# String printed before the search cursor.
+# prompt = "> "
+
+# Number of entries shown per page (PageUp/PageDown step size). Must be >= 1.
+# page_size = 10
+
+# Show Nerd Font icons before each app name. Set to false on terminals without
+# a Nerd Font to avoid tofu squares.
+# show_icons = true
+
+# Prefix drawn on the selected row. Unselected rows get matching spaces so
+# icons stay aligned. Must not be empty.
+# selected_marker = "> "
+
+# Single-character cursor glyph drawn after the prompt. Multi-char values are
+# rejected with a warning.
+# cursor_char = "█"
+
+# Draw the cursor glyph at all. Set to false for a cursor-less prompt.
+# show_cursor = true

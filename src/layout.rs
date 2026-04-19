@@ -20,10 +20,10 @@ pub fn compute(area: Rect, config: &Config) -> LayoutRects {
     let inner_height = area.height.saturating_sub(pad_v.saturating_mul(2));
     let inner_end_y = inner_y + inner_height;
 
-    let banner_lines: Vec<&str> = if config.banner.is_empty() {
+    let banner_lines: Vec<&str> = if config.ui.banner.is_empty() {
         Vec::new()
     } else {
-        config.banner.lines().collect()
+        config.ui.banner.lines().collect()
     };
     let banner_height = (banner_lines.len() as u16).min(inner_height);
     let banner_width = banner_lines
@@ -69,7 +69,7 @@ pub fn compute(area: Rect, config: &Config) -> LayoutRects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, LayoutConfig};
+    use crate::config::{Config, LayoutConfig, UiConfig};
 
     fn config_with_layout(layout: LayoutConfig) -> Config {
         Config {
@@ -80,7 +80,10 @@ mod tests {
 
     fn bannerless_config_with_layout(layout: LayoutConfig) -> Config {
         Config {
-            banner: String::new(),
+            ui: UiConfig {
+                banner: String::new(),
+                ..UiConfig::default()
+            },
             layout,
             ..Config::default()
         }
@@ -92,7 +95,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 24);
         let rects = compute(area, &cfg);
 
-        let banner_lines = cfg.banner.lines().count() as u16;
+        let banner_lines = cfg.ui.banner.lines().count() as u16;
         assert_eq!(rects.banner.x, 0);
         assert_eq!(rects.banner.y, 0);
         assert_eq!(rects.banner.width, 80);
@@ -121,6 +124,7 @@ mod tests {
         let rects = compute(area, &cfg);
 
         let banner_width = cfg
+            .ui
             .banner
             .lines()
             .map(|l| l.chars().count() as u16)
@@ -148,7 +152,7 @@ mod tests {
         assert_eq!(rects.list.x, 4);
         assert_eq!(rects.list.width, 72);
 
-        let banner_lines = cfg.banner.lines().count() as u16;
+        let banner_lines = cfg.ui.banner.lines().count() as u16;
         assert_eq!(
             rects.list.y + rects.list.height,
             area.height - 2,
