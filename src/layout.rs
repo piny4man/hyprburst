@@ -1,6 +1,6 @@
 use ratatui::prelude::Rect;
 
-use crate::config::Config;
+use crate::config::{Config, LayoutMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutRects {
@@ -8,6 +8,7 @@ pub struct LayoutRects {
     pub input: Rect,
     pub separator: Option<Rect>,
     pub list: Rect,
+    pub columns: u16,
 }
 
 pub fn compute(area: Rect, config: &Config) -> LayoutRects {
@@ -58,18 +59,27 @@ pub fn compute(area: Rect, config: &Config) -> LayoutRects {
     let list_height = inner_end_y.saturating_sub(cursor_y);
     let list = Rect::new(inner_x, cursor_y, inner_width, list_height);
 
+    let columns = match config.layout.mode {
+        LayoutMode::List => 1,
+        LayoutMode::Grid => {
+            let min_width = config.layout.min_column_width.max(1);
+            (list.width / min_width).max(1)
+        }
+    };
+
     LayoutRects {
         banner,
         input,
         separator,
         list,
+        columns,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, LayoutConfig, UiConfig};
+    use crate::config::{Config, LayoutConfig, LayoutMode, UiConfig};
 
     fn config_with_layout(layout: LayoutConfig) -> Config {
         Config {
@@ -196,6 +206,95 @@ mod tests {
 
         assert_eq!(rects.banner.height, 0);
         assert_eq!(rects.input.y, 0);
+    }
+
+    #[test]
+    fn list_mode_has_single_column() {
+        let cfg = Config::default();
+        let area = Rect::new(0, 0, 80, 24);
+        let rects = compute(area, &cfg);
+        assert_eq!(rects.columns, 1);
+    }
+
+    #[test]
+    fn grid_mode_column_count_matches_width_divided_by_min_width() {
+        let cfg = config_with_layout(LayoutConfig {
+            mode: LayoutMode::Grid,
+            min_column_width: 20,
+            ..LayoutConfig::default()
+        });
+        let area = Rect::new(0, 0, 80, 24);
+        let rects = compute(area, &cfg);
+        assert_eq!(rects.list.width, 80);
+        assert_eq!(rects.columns, 4);
+    }
+
+    #[test]
+    fn grid_mode_column_count_at_typical_widths() {
+        let cases = [
+            (80_u16, 20_u16, 4),
+            (120, 20, 6),
+            (100, 30, 3),
+            (200, 40, 5),
+        ];
+        for (width, min_width, expected_cols) in cases {
+            let cfg = config_with_layout(LayoutConfig {
+                mode: LayoutMode::Grid,
+                min_column_width: min_width,
+                ..LayoutConfig::default()
+            });
+            let area = Rect::new(0, 0, width, 24);
+            let rects = compute(area, &cfg);
+            assert_eq!(
+                rects.columns, expected_cols,
+                "width={} min={} expected {} cols, got {}",
+                width, min_width, expected_cols, rects.columns
+            );
+        }
+    }
+
+    #[test]
+    fn grid_mode_narrow_terminal_collapses_to_single_column() {
+        let cfg = config_with_layout(LayoutConfig {
+            mode: LayoutMode::Grid,
+            min_column_width: 40,
+            ..LayoutConfig::default()
+        });
+        let area = Rect::new(0, 0, 20, 24);
+        let rects = compute(area, &cfg);
+        assert_eq!(rects.columns, 1);
+    }
+
+    #[test]
+    fn grid_mode_narrower_than_min_width_does_not_panic() {
+        let cfg = config_with_layout(LayoutConfig {
+            mode: LayoutMode::Grid,
+            min_column_width: 50,
+            ..LayoutConfig::default()
+        });
+        let area = Rect::new(0, 0, 4, 2);
+        let rects = compute(area, &cfg);
+        assert_eq!(rects.columns, 1);
+    }
+
+    #[test]
+    fn list_mode_ignores_min_column_width() {
+        let cfg_a = config_with_layout(LayoutConfig {
+            mode: LayoutMode::List,
+            min_column_width: 20,
+            ..LayoutConfig::default()
+        });
+        let cfg_b = config_with_layout(LayoutConfig {
+            mode: LayoutMode::List,
+            min_column_width: 200,
+            ..LayoutConfig::default()
+        });
+        let area = Rect::new(0, 0, 80, 24);
+        let rects_a = compute(area, &cfg_a);
+        let rects_b = compute(area, &cfg_b);
+        assert_eq!(rects_a.columns, 1);
+        assert_eq!(rects_b.columns, 1);
+        assert_eq!(rects_a.list, rects_b.list);
     }
 
     #[test]

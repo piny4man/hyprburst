@@ -17,6 +17,7 @@ const DEFAULT_PAGE_SIZE: usize = 10;
 pub(crate) const MAX_PADDING: u16 = 32;
 pub(crate) const DEFAULT_SELECTED_MARKER: &str = "> ";
 pub(crate) const DEFAULT_CURSOR_CHAR: &str = "█";
+pub(crate) const DEFAULT_MIN_COLUMN_WIDTH: u16 = 20;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
@@ -26,12 +27,34 @@ pub struct Config {
     pub ui: UiConfig,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayoutConfig {
+    pub mode: LayoutMode,
     pub padding_horizontal: u16,
     pub padding_vertical: u16,
     pub center_banner: bool,
     pub separator: bool,
+    pub min_column_width: u16,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            mode: LayoutMode::default(),
+            padding_horizontal: 0,
+            padding_vertical: 0,
+            center_banner: false,
+            separator: false,
+            min_column_width: DEFAULT_MIN_COLUMN_WIDTH,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LayoutMode {
+    #[default]
+    List,
+    Grid,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,10 +235,12 @@ struct RawUi {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawLayout {
+    mode: Option<String>,
     padding_horizontal: Option<u16>,
     padding_vertical: Option<u16>,
     center_banner: Option<bool>,
     separator: Option<bool>,
+    min_column_width: Option<u16>,
 }
 
 #[derive(Default, Deserialize)]
@@ -258,7 +283,7 @@ impl RawConfig {
                 empty: resolve_color(self.colors.empty, "colors.empty", defaults.colors.empty)?,
             },
             terminal: self.terminal.into_config(&mut warnings)?,
-            layout: self.layout.into_config(&mut warnings),
+            layout: self.layout.into_config(&mut warnings)?,
             ui: self.ui.into_config(&mut warnings)?,
         };
 
@@ -315,7 +340,7 @@ impl RawUi {
 }
 
 impl RawLayout {
-    fn into_config(self, warnings: &mut Vec<String>) -> LayoutConfig {
+    fn into_config(self, warnings: &mut Vec<String>) -> Result<LayoutConfig, ConfigError> {
         let defaults = LayoutConfig::default();
         let padding_horizontal = resolve_padding(
             self.padding_horizontal,
@@ -326,12 +351,37 @@ impl RawLayout {
         let padding_vertical =
             resolve_padding(self.padding_vertical, "layout.padding_vertical", warnings)
                 .unwrap_or(defaults.padding_vertical);
-        LayoutConfig {
+
+        let mode = match self.mode.as_deref() {
+            None => defaults.mode,
+            Some("list") => LayoutMode::List,
+            Some("grid") => LayoutMode::Grid,
+            Some(other) => {
+                return Err(ConfigError::Validation(format!(
+                    "layout.mode must be \"list\" or \"grid\", got {:?}",
+                    other
+                )));
+            }
+        };
+
+        let min_column_width = match self.min_column_width {
+            None => defaults.min_column_width,
+            Some(0) => {
+                return Err(ConfigError::Validation(
+                    "layout.min_column_width must be at least 1".to_string(),
+                ));
+            }
+            Some(v) => v,
+        };
+
+        Ok(LayoutConfig {
+            mode,
             padding_horizontal,
             padding_vertical,
             center_banner: self.center_banner.unwrap_or(defaults.center_banner),
             separator: self.separator.unwrap_or(defaults.separator),
-        }
+            min_column_width,
+        })
     }
 }
 
@@ -1003,6 +1053,64 @@ show_cursor = true
 "#;
         let (_, warnings) = Config::from_toml_str_validating(toml).unwrap();
         assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+    }
+
+    #[test]
+    fn default_layout_mode_is_list() {
+        let cfg = Config::default();
+        assert_eq!(cfg.layout.mode, LayoutMode::List);
+        assert_eq!(cfg.layout.min_column_width, DEFAULT_MIN_COLUMN_WIDTH);
+    }
+
+    #[test]
+    fn grid_layout_section_round_trips() {
+        let toml = r#"
+[layout]
+mode = "grid"
+min_column_width = 24
+padding_horizontal = 2
+padding_vertical = 1
+center_banner = true
+separator = true
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.layout.mode, LayoutMode::Grid);
+        assert_eq!(cfg.layout.min_column_width, 24);
+        assert_eq!(cfg.layout.padding_horizontal, 2);
+        assert_eq!(cfg.layout.padding_vertical, 1);
+        assert!(cfg.layout.center_banner);
+        assert!(cfg.layout.separator);
+    }
+
+    #[test]
+    fn explicit_list_mode_parses() {
+        let toml = r#"
+[layout]
+mode = "list"
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.layout.mode, LayoutMode::List);
+    }
+
+    #[test]
+    fn invalid_layout_mode_rejected() {
+        let toml = r#"
+[layout]
+mode = "masonry"
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn zero_min_column_width_rejected() {
+        let toml = r#"
+[layout]
+mode = "grid"
+min_column_width = 0
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
     }
 
     #[test]

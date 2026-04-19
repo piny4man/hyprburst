@@ -55,10 +55,20 @@
 # [terminal.flags.cosmic-term]
 # args = ["--class={class}", "-e", "{cmd}"]
 
-# Layout knobs controlling padding, banner centring, and separator line.
-# Defaults preserve today's visual output (no padding, left-aligned banner,
-# no separator). Values out of range fall back to defaults with a warning.
+# Layout knobs controlling mode, padding, banner centring, and separator line.
+# Defaults preserve today's visual output (list mode, no padding, left-aligned
+# banner, no separator). Values out of range fall back to defaults with a
+# warning.
 [layout]
+# Render mode: "list" (one entry per row) or "grid" (entries flow across
+# auto-fit columns). Defaults to "list". Unknown values are rejected.
+# mode = "list"
+
+# Minimum column width in cells. Used only when mode = "grid"; column count is
+# max(1, list_width / min_column_width). Must be >= 1. Narrow terminals
+# collapse to a single column automatically.
+# min_column_width = 20
+
 # Horizontal padding applied to both left and right edges. Capped at 32;
 # values above the cap fall back to 0.
 # padding_horizontal = 0
