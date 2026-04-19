@@ -113,9 +113,13 @@ cp config.example.toml ~/.config/burst/config.toml
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `banner` | string | built-in ASCII "burst" | Multi-line TOML string (`"""..."""`). Empty string hides the banner. |
-| `prompt` | string | `"> "` | Printed before the search cursor. |
-| `page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
+| `ui.banner` | string | built-in ASCII "burst" | Multi-line TOML string (`"""..."""`). Empty string hides the banner. |
+| `ui.prompt` | string | `"> "` | Printed before the search cursor. |
+| `ui.page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
+| `ui.show_icons` | bool | `true` | Draw a Nerd Font glyph before each app. Disable on non-Nerd-Font terminals. |
+| `ui.selected_marker` | string | `"> "` | Prefix drawn on the selected row. |
+| `ui.cursor_char` | string | `"█"` | Single-character cursor glyph after the prompt. |
+| `ui.show_cursor` | bool | `true` | Draw the cursor glyph at all. |
 | `colors.banner` | color | `magenta` | ASCII banner color. |
 | `colors.prompt` | color | `cyan` | Prompt + cursor color. |
 | `colors.selected` | color | `yellow` | Highlighted entry in the result list. |
@@ -130,6 +134,7 @@ Named colors: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `whi
 ### Minimal example
 
 ```toml
+[ui]
 prompt = "λ "
 page_size = 8
 
@@ -140,7 +145,7 @@ selected = "light-cyan"
 
 ### Validation
 
-Unknown top-level keys, unknown `[colors]` keys, malformed hex (`#fff`, `#xyzxyz`), unknown color names, and `page_size = 0` are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
+Unknown top-level keys, unknown keys in any section, malformed hex (`#fff`, `#xyzxyz`), unknown color names, and `ui.page_size = 0` are all rejected with a message naming the offending field. On any error burst prints the reason to stderr and starts with the built-in defaults.
 
 ## History Schema
 
