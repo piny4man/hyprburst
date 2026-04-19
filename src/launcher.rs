@@ -21,6 +21,7 @@ pub struct Launcher {
     pub(crate) history: Option<History>,
     pub(crate) scores: HashMap<String, f64>,
     pub(crate) config: Config,
+    pub(crate) last_columns: u16,
 }
 
 impl Launcher {
@@ -38,6 +39,7 @@ impl Launcher {
             history,
             scores,
             config,
+            last_columns: 1,
         };
         launcher.rebuild_filtered();
         launcher
@@ -53,20 +55,10 @@ impl Launcher {
             KeyCode::Tab => self.autocomplete(),
             KeyCode::PageUp => self.page_up(),
             KeyCode::PageDown => self.page_down(),
-            KeyCode::Up => {
-                if self.selected_index == 0 {
-                    self.selected_index = self.filtered.len().saturating_sub(1);
-                } else {
-                    self.selected_index = self.selected_index.saturating_sub(1);
-                }
-            }
-            KeyCode::Down => {
-                if self.selected_index + 1 >= self.filtered.len() {
-                    self.selected_index = 0;
-                } else {
-                    self.selected_index += 1;
-                }
-            }
+            KeyCode::Up => self.move_vertical(-1),
+            KeyCode::Down => self.move_vertical(1),
+            KeyCode::Left => self.move_horizontal(-1),
+            KeyCode::Right => self.move_horizontal(1),
             KeyCode::Enter => self.launch_selected(),
             KeyCode::Backspace => {
                 self.query.pop();
@@ -100,6 +92,34 @@ impl Launcher {
         let name = &self.apps[idx].name;
         self.query = name.to_string();
         self.rebuild_filtered();
+    }
+
+    fn move_vertical(&mut self, dr: i32) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let cols = self.last_columns.max(1) as i32;
+        let n = self.filtered.len() as i32;
+        let idx = self.selected_index as i32;
+        let col = idx % cols;
+        let rows_in_col = (n - 1 - col).div_euclid(cols) + 1;
+        let row_in_col = idx.div_euclid(cols);
+        let new_row = (row_in_col + dr).rem_euclid(rows_in_col);
+        self.selected_index = (new_row * cols + col) as usize;
+    }
+
+    fn move_horizontal(&mut self, dc: i32) {
+        if self.filtered.is_empty() || self.last_columns <= 1 {
+            return;
+        }
+        let cols = self.last_columns as i32;
+        let n = self.filtered.len() as i32;
+        let idx = self.selected_index as i32;
+        let row = idx.div_euclid(cols);
+        let col = idx % cols;
+        let last_col_in_row = (n - 1 - row * cols).min(cols - 1);
+        let new_col = (col + dc).rem_euclid(last_col_in_row + 1);
+        self.selected_index = (row * cols + new_col) as usize;
     }
 
     fn page_up(&mut self) {
@@ -158,7 +178,9 @@ impl Widget for &mut Launcher {
             input: input_area,
             separator: separator_area,
             list: list_area,
+            columns,
         } = layout::compute(area, &self.config);
+        self.last_columns = columns.max(1);
 
         if banner_area.height > 0 && !self.config.ui.banner.is_empty() {
             let banner_style = Style::new()
@@ -227,12 +249,19 @@ impl Widget for &mut Launcher {
         let marker_width = marker.chars().count();
         let unselected_prefix: String = " ".repeat(marker_width);
 
-        for (i, &(idx, _score)) in self.filtered.iter().enumerate() {
-            if i as u16 >= list_area.height {
+        let columns = columns.max(1);
+        let col_width = list_area.width / columns;
+        let max_rows = list_area.height as usize;
+        let max_cells = max_rows.saturating_mul(columns as usize);
+
+        for (i, &(idx, _score)) in self.filtered.iter().enumerate().take(max_cells) {
+            let row = (i / columns as usize) as u16;
+            let col = (i % columns as usize) as u16;
+            if row >= list_area.height {
                 break;
             }
-
-            let y = list_area.y + i as u16;
+            let cell_x = list_area.x + col * col_width;
+            let cell_y = list_area.y + row;
             let selected = i == self.selected_index;
             let prefix: &str = if selected { marker } else { &unselected_prefix };
             let style = if selected {
@@ -244,13 +273,20 @@ impl Widget for &mut Launcher {
             };
 
             let app = &self.apps[idx];
-            let line = if self.config.ui.show_icons {
+            let mut line = if self.config.ui.show_icons {
                 let glyph = icon_glyph_for(app);
                 format!("{}{} {}", prefix, glyph, app.name)
             } else {
                 format!("{}{}", prefix, app.name)
             };
-            buf.set_string(list_area.x, y, &line, style);
+            if columns > 1 {
+                let cell_width = col_width as usize;
+                let line_width = line.chars().count();
+                if line_width > cell_width {
+                    line = line.chars().take(cell_width).collect();
+                }
+            }
+            buf.set_string(cell_x, cell_y, &line, style);
         }
     }
 }
@@ -289,6 +325,7 @@ mod tests {
             history: None,
             scores: std::collections::HashMap::new(),
             config: Config::default(),
+            last_columns: 1,
         }
     }
 
@@ -387,6 +424,7 @@ mod tests {
             history: None,
             scores: std::collections::HashMap::new(),
             config: Config::default(),
+            last_columns: 1,
         };
         launcher.handle_key(KeyCode::Esc);
         assert!(!launcher.running);
@@ -464,6 +502,7 @@ mod tests {
                 },
                 ..Config::default()
             },
+            last_columns: 1,
         };
         let area = Rect::new(0, 0, 40, 5);
         let mut buf = Buffer::empty(area);
@@ -495,6 +534,7 @@ mod tests {
             history: None,
             scores: std::collections::HashMap::new(),
             config,
+            last_columns: 1,
         }
     }
 
@@ -598,6 +638,135 @@ mod tests {
             "expected custom cursor glyph, got {:?}",
             row
         );
+    }
+
+    fn make_launcher_with_n_apps(n: usize) -> Launcher {
+        let apps: Vec<DesktopEntry> = (0..n)
+            .map(|i| DesktopEntry {
+                id: format!("app-{}", i),
+                name: format!("App {}", i),
+                icon: format!("icon-{}", i),
+                exec: format!("app-{}", i),
+            })
+            .collect();
+        let filtered = (0..n).map(|i| (i, 0u32)).collect();
+        Launcher {
+            apps,
+            query: String::new(),
+            filtered,
+            selected_index: 0,
+            running: true,
+            history: None,
+            scores: std::collections::HashMap::new(),
+            config: Config::default(),
+            last_columns: 1,
+        }
+    }
+
+    #[test]
+    fn grid_down_moves_to_next_row_same_column() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 1;
+        launcher.handle_key(KeyCode::Down);
+        assert_eq!(launcher.selected_index, 5);
+    }
+
+    #[test]
+    fn grid_up_moves_to_prev_row_same_column() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 6;
+        launcher.handle_key(KeyCode::Up);
+        assert_eq!(launcher.selected_index, 2);
+    }
+
+    #[test]
+    fn grid_right_moves_within_row() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 1;
+        launcher.handle_key(KeyCode::Right);
+        assert_eq!(launcher.selected_index, 2);
+    }
+
+    #[test]
+    fn grid_left_moves_within_row() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 2;
+        launcher.handle_key(KeyCode::Left);
+        assert_eq!(launcher.selected_index, 1);
+    }
+
+    #[test]
+    fn grid_right_wraps_within_row() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 3;
+        launcher.handle_key(KeyCode::Right);
+        assert_eq!(launcher.selected_index, 0);
+    }
+
+    #[test]
+    fn grid_left_wraps_within_row() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 4;
+        launcher.handle_key(KeyCode::Left);
+        assert_eq!(launcher.selected_index, 7);
+    }
+
+    #[test]
+    fn grid_down_wraps_to_top_same_column() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 9;
+        launcher.handle_key(KeyCode::Down);
+        assert_eq!(launcher.selected_index, 1);
+    }
+
+    #[test]
+    fn grid_up_wraps_to_bottom_same_column() {
+        let mut launcher = make_launcher_with_n_apps(12);
+        launcher.last_columns = 4;
+        launcher.selected_index = 2;
+        launcher.handle_key(KeyCode::Up);
+        assert_eq!(launcher.selected_index, 10);
+    }
+
+    #[test]
+    fn grid_down_into_missing_last_row_cell_wraps_to_top() {
+        // 7 apps, 3 cols → rows: [0,1,2] [3,4,5] [6]. Col 2 only exists on
+        // rows 0 and 1. Down from idx 5 (row 1 col 2) wraps to idx 2 (row 0
+        // col 2) instead of landing on a non-existent row-2 col-2 cell.
+        let mut launcher = make_launcher_with_n_apps(7);
+        launcher.last_columns = 3;
+        launcher.selected_index = 5;
+        launcher.handle_key(KeyCode::Down);
+        assert_eq!(launcher.selected_index, 2);
+    }
+
+    #[test]
+    fn grid_right_on_short_last_row_wraps_within_that_row() {
+        // 7 apps, 3 cols → last row has only idx 6. Right from 6 wraps to 6
+        // itself (single-cell row).
+        let mut launcher = make_launcher_with_n_apps(7);
+        launcher.last_columns = 3;
+        launcher.selected_index = 6;
+        launcher.handle_key(KeyCode::Right);
+        assert_eq!(launcher.selected_index, 6);
+    }
+
+    #[test]
+    fn list_mode_left_right_is_noop() {
+        let mut launcher = make_launcher_with_n_apps(5);
+        launcher.last_columns = 1;
+        launcher.selected_index = 2;
+        launcher.handle_key(KeyCode::Left);
+        assert_eq!(launcher.selected_index, 2);
+        launcher.handle_key(KeyCode::Right);
+        assert_eq!(launcher.selected_index, 2);
     }
 
     #[test]
