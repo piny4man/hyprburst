@@ -70,3 +70,20 @@
 #
 # [terminal.flags.cosmic-term]
 # args = ["--class={class}", "-e", "{cmd}"]
+
+# Layout knobs controlling padding, banner centring, and separator line.
+# Defaults preserve today's visual output (no padding, left-aligned banner,
+# no separator). Values out of range fall back to defaults with a warning.
+[layout]
+# Horizontal padding applied to both left and right edges. Capped at 32;
+# values above the cap fall back to 0.
+# padding_horizontal = 0
+
+# Vertical padding applied to both top and bottom edges. Capped at 32.
+# padding_vertical = 0
+
+# Centre the banner horizontally within the padded area.
+# center_banner = false
+
+# Draw a single-row separator line between the prompt and the result list.
+# separator = false
