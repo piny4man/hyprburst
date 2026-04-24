@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "tackle-rs": {
+      "source": "piny4man/skills",
+      "sourceType": "github",
+      "computedHash": "813626fd11894e6fed176e3772ac2311e37d8c56fe084839424fab627f0e92a9"
+    }
+  }
+}
