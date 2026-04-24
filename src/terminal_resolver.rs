@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use crate::config::{Config, TerminalConfig};
 
-const BURST_CMD: &str = "burst";
+/// Argv emitted in place of the `{cmd}` placeholder when resolving a terminal
+/// template. `burst tui` — not bare `burst` — because bare `burst` re-execs
+/// into a terminal (that's what got us here), which would recurse forever.
+const BURST_CMD_ARGV: &[&str] = &["burst", "tui"];
 const BUILTIN_CHAIN: &[&str] = &["alacritty", "wezterm", "ghostty", "kitty", "foot", "rio"];
 
 /// Snapshot of terminal-related environment variables.
@@ -122,13 +125,15 @@ fn make_resolved(binary: &str, template_key: &str, terminal: &TerminalConfig) ->
         .cloned()
         .unwrap_or_else(|| vec!["-e".to_string(), "{cmd}".to_string()]);
 
-    let argv = template
-        .into_iter()
-        .map(|arg| {
-            arg.replace("{class}", &terminal.class)
-                .replace("{cmd}", BURST_CMD)
-        })
-        .collect();
+    let mut argv = Vec::with_capacity(template.len() + BURST_CMD_ARGV.len());
+    for arg in template {
+        if arg == "{cmd}" {
+            argv.extend(BURST_CMD_ARGV.iter().map(|s| (*s).to_string()));
+        } else {
+            let substituted = arg.replace("{class}", &terminal.class);
+            argv.push(substituted.replace("{cmd}", &BURST_CMD_ARGV.join(" ")));
+        }
+    }
 
     ResolvedTerminal {
         binary: binary.to_string(),
@@ -239,7 +244,7 @@ mod tests {
         assert_eq!(resolved.binary, "rio");
         assert_eq!(
             resolved.argv,
-            vec!["--title=burst", "-e", "burst"]
+            vec!["--title=burst", "-e", "burst", "tui"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>()
@@ -272,7 +277,11 @@ mod tests {
         assert_eq!(resolved.binary, "kitty");
         assert_eq!(
             resolved.argv,
-            vec!["--class=burst".to_string(), "burst".to_string()]
+            vec![
+                "--class=burst".to_string(),
+                "burst".to_string(),
+                "tui".to_string(),
+            ]
         );
     }
 
@@ -326,7 +335,11 @@ mod tests {
         assert_eq!(resolved.binary, "kitty");
         assert_eq!(
             resolved.argv,
-            vec!["--class=burst".to_string(), "burst".to_string()]
+            vec![
+                "--class=burst".to_string(),
+                "burst".to_string(),
+                "tui".to_string(),
+            ]
         );
     }
 
@@ -361,12 +374,12 @@ mod tests {
     #[test]
     fn each_builtin_resolves_to_correct_argv() {
         let cases: &[(&str, &[&str])] = &[
-            ("alacritty", &["--class=burst", "-e", "burst"]),
-            ("wezterm", &["start", "--class=burst", "--", "burst"]),
-            ("ghostty", &["--class=burst", "-e", "burst"]),
-            ("kitty", &["--class=burst", "burst"]),
-            ("foot", &["--app-id=burst", "burst"]),
-            ("rio", &["--title=burst", "-e", "burst"]),
+            ("alacritty", &["--class=burst", "-e", "burst", "tui"]),
+            ("wezterm", &["start", "--class=burst", "--", "burst", "tui"]),
+            ("ghostty", &["--class=burst", "-e", "burst", "tui"]),
+            ("kitty", &["--class=burst", "burst", "tui"]),
+            ("foot", &["--app-id=burst", "burst", "tui"]),
+            ("rio", &["--title=burst", "-e", "burst", "tui"]),
         ];
 
         for (binary, expected) in cases {
@@ -403,6 +416,7 @@ mod tests {
                 "--my-flag".to_string(),
                 "--class=burst".to_string(),
                 "burst".to_string(),
+                "tui".to_string(),
             ]
         );
     }
@@ -421,7 +435,11 @@ mod tests {
         let resolved = resolve(&cfg, &env, &probe).unwrap();
         assert_eq!(
             resolved.argv,
-            vec!["--app-id=my-launcher".to_string(), "burst".to_string()]
+            vec![
+                "--app-id=my-launcher".to_string(),
+                "burst".to_string(),
+                "tui".to_string(),
+            ]
         );
     }
 
@@ -435,7 +453,38 @@ mod tests {
 
         let resolved = resolve(&cfg, &env, &probe).unwrap();
         assert_eq!(resolved.binary, "mystery-term");
-        assert_eq!(resolved.argv, vec!["-e".to_string(), "burst".to_string()]);
+        assert_eq!(
+            resolved.argv,
+            vec!["-e".to_string(), "burst".to_string(), "tui".to_string()]
+        );
+    }
+
+    #[test]
+    fn cmd_placeholder_expands_to_burst_tui_to_avoid_relaunch_recursion() {
+        // Bare `burst` re-execs into a terminal, so the terminal must run
+        // `burst tui` (the inline TUI subcommand), not bare `burst` — otherwise
+        // the spawned terminal loops back into run_launch().
+        for name in ["alacritty", "wezterm", "ghostty", "kitty", "foot", "rio"] {
+            let cfg = cfg_with_terminal(terminal_with(&[name]));
+            let env = Env::default();
+            let probe = FakeProbe::new().with(name);
+
+            let resolved = resolve(&cfg, &env, &probe).unwrap();
+            let tail: Vec<&str> = resolved
+                .argv
+                .iter()
+                .rev()
+                .take(2)
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                tail,
+                vec!["tui", "burst"],
+                "{} template must end with `burst tui`, got {:?}",
+                name,
+                resolved.argv,
+            );
+        }
     }
 
     #[test]
