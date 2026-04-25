@@ -2,7 +2,8 @@
 //!
 //! Fails CI if the shipped Hyprland config drifts from the documentation —
 //! every windowrule promised in the README, the `burst` bind, and the
-//! commented `env = TERMINAL,rio` example must all be present.
+//! commented `env = TERMINAL,rio` example must all be present. It also checks
+//! that README setup notes document the known Hyprland/Waybar overlay details.
 
 use std::path::PathBuf;
 
@@ -12,13 +13,19 @@ fn load_conf() -> String {
         .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e))
 }
 
+fn load_readme() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("README.md");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e))
+}
+
 #[test]
 fn contains_all_documented_windowrules() {
     let conf = load_conf();
     let expected_rules = [
         "windowrule = match:class ^(burst)$, float on",
-        "windowrule = match:class ^(burst)$, size 100% 100%",
-        "windowrule = match:class ^(burst)$, center on",
+        "windowrule = match:class ^(burst)$, size (monitor_w) (monitor_h)",
+        "windowrule = match:class ^(burst)$, move 0 0",
         "windowrule = match:class ^(burst)$, opacity 0.9 0.8",
         "windowrule = match:class ^(burst)$, border_size 0",
         "windowrule = match:class ^(burst)$, no_shadow on",
@@ -31,6 +38,49 @@ fn contains_all_documented_windowrules() {
             "hyprland-burst.conf missing windowrule: {rule:?}"
         );
     }
+}
+
+#[test]
+fn does_not_use_percent_size_or_center_for_overlay() {
+    let conf = load_conf();
+    assert!(
+        !conf.contains("size 100% 100%"),
+        "hyprland-burst.conf still uses percentage sizing; use monitor expressions instead"
+    );
+    assert!(
+        !conf.contains("windowrule = match:class ^(burst)$, center on"),
+        "hyprland-burst.conf still centers burst; move it to 0 0 after monitor-sized resize"
+    );
+}
+
+#[test]
+fn readme_documents_full_monitor_overlay_rules() {
+    let readme = load_readme();
+    assert!(
+        readme.contains("size (monitor_w) (monitor_h)"),
+        "README missing monitor expression sizing rule"
+    );
+    assert!(
+        readme.contains("move 0 0"),
+        "README missing top-left placement rule"
+    );
+    assert!(
+        readme.contains("full-monitor floating overlay"),
+        "README should explain that burst is fake-fullscreen, not real fullscreen"
+    );
+}
+
+#[test]
+fn readme_documents_waybar_layer_workaround() {
+    let readme = load_readme();
+    assert!(
+        readme.contains("\"layer\": \"bottom\""),
+        "README should document setting Waybar to the bottom layer when it covers burst"
+    );
+    assert!(
+        readme.contains("Waybar is a layer-shell surface"),
+        "README should explain why normal window rules cannot draw above top-layer Waybar"
+    );
 }
 
 #[test]
