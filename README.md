@@ -59,8 +59,8 @@ The rules inside:
 ```ini
 # Requires Hyprland 0.48+ (unified `windowrule`; `windowrulev2` is deprecated).
 windowrule = match:class ^(burst)$, float on
-windowrule = match:class ^(burst)$, size 100% 100%
-windowrule = match:class ^(burst)$, center on
+windowrule = match:class ^(burst)$, size (monitor_w) (monitor_h)
+windowrule = match:class ^(burst)$, move 0 0
 windowrule = match:class ^(burst)$, opacity 0.9 0.8
 windowrule = match:class ^(burst)$, border_size 0
 windowrule = match:class ^(burst)$, no_shadow on
@@ -72,7 +72,17 @@ bind = SUPER, Space, exec, burst
 # env = TERMINAL,rio
 ```
 
-The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to the transparent regions as long as `decoration:blur:enabled = true` is set globally — terminals render on a transparent-capable background so the blur shows through. `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while burst is open.
+The `size (monitor_w) (monitor_h)` and `move 0 0` rules make burst a full-monitor floating overlay without putting the client into real fullscreen. This matters for transparent terminals: the windows behind burst stay visible for opacity and blur effects. The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to the transparent regions as long as `decoration:blur:enabled = true` is set globally — terminals render on a transparent-capable background so the blur shows through. `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while burst is open.
+
+If Waybar renders above burst, set Waybar's own config to `"layer": "bottom"` and restart Waybar:
+
+```jsonc
+{
+  "layer": "bottom"
+}
+```
+
+Waybar is a layer-shell surface, so a normal floating window rule cannot draw above it while Waybar remains on the `top` layer.
 
 Burst renders a fade-in animation on open (configurable timing lives in `src/effects.rs`). Escape closes the overlay.
 
