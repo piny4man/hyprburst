@@ -42,13 +42,13 @@ fn escape_exits_full_app() {
 }
 
 #[test]
-fn default_banner_renders_at_top_of_frame() {
+fn default_banner_renders_below_top_padding() {
     let mut app = App::new(Config::default());
     let buf = render(&mut app, 80, 24);
-    let first_row = row_text(&buf, 0);
+    let first_row = row_text(&buf, 1);
     assert!(
         first_row.trim_start().starts_with("_"),
-        "expected banner art on first row, got {:?}",
+        "expected banner art below top padding, got {:?}",
         first_row
     );
 }
@@ -81,13 +81,13 @@ fn custom_banner_overrides_default() {
 }
 
 #[test]
-fn empty_banner_hides_banner_and_prompt_moves_up() {
+fn empty_banner_hides_banner_and_prompt_uses_top_padding() {
     let mut app = App::new(no_banner_config());
     let buf = render(&mut app, 40, 10);
-    let first_row = row_text(&buf, 0);
+    let first_row = row_text(&buf, 1);
     assert!(
         first_row.contains("> "),
-        "with empty banner the prompt should render on the first row, got {:?}",
+        "with empty banner the prompt should render below top padding, got {:?}",
         first_row
     );
 }
@@ -114,7 +114,7 @@ fn backspace_reverts_prompt_characters() {
     app.handle_key(KeyCode::Backspace);
     app.handle_key(KeyCode::Backspace);
     let buf = render(&mut app, 40, 10);
-    let prompt_row = row_text(&buf, 0);
+    let prompt_row = row_text(&buf, 1);
     assert!(
         prompt_row.contains("> a") && !prompt_row.contains("> ab"),
         "expected single remaining char after two backspaces, got {:?}",

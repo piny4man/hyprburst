@@ -70,11 +70,12 @@
 # min_column_width = 20
 
 # Horizontal padding applied to both left and right edges. Capped at 32;
-# values above the cap fall back to 0.
-# padding_horizontal = 0
+# values above the cap fall back to the default of 2.
+# padding_horizontal = 2
 
-# Vertical padding applied to both top and bottom edges. Capped at 32.
-# padding_vertical = 0
+# Vertical padding applied to both top and bottom edges. Capped at 32. Set both
+# padding values to 0 for the densest layout.
+# padding_vertical = 1
 
 # Centre the banner horizontally within the padded area.
 # center_banner = false
