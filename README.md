@@ -157,8 +157,8 @@ Two sections cover everything about how burst renders on screen: `[layout]` cont
 |-----|------|---------|-------|
 | `layout.mode` | string | `"list"` | `"list"` for one entry per row, `"grid"` for column-aware navigation. |
 | `layout.min_column_width` | integer | `20` | Grid-mode only. Cells narrower than this collapse to fewer columns. Must be `>= 1`. |
-| `layout.padding_horizontal` | integer | `0` | Extra columns of whitespace on the left and right. Capped at 32; oversized values warn and fall back. |
-| `layout.padding_vertical` | integer | `0` | Extra rows of whitespace above and below. Capped at 32. |
+| `layout.padding_horizontal` | integer | `4` | Extra columns of whitespace on the left and right. Capped at 32; oversized values warn and fall back. Set to `0` for the densest layout. |
+| `layout.padding_vertical` | integer | `2` | Extra rows of whitespace above and below. Capped at 32. Set to `0` for the densest layout. |
 | `layout.center_banner` | bool | `false` | Horizontally center the banner inside the available width. |
 | `layout.separator` | bool | `false` | Draw a thin rule between banner/search and the result list. |
 
@@ -173,6 +173,13 @@ Two sections cover everything about how burst renders on screen: `[layout]` cont
 | `ui.selected_marker` | string | `"> "` | Prefix drawn on the selected row. Empty string falls back to the default. |
 | `ui.cursor_char` | string | `"█"` | Single-character cursor glyph after the prompt. Non-single-grapheme values fall back to the default. |
 | `ui.show_cursor` | bool | `true` | Draw the cursor glyph at all. |
+| `ui.loading_polish` | bool | `true` | Show a loading message while discovery is still running and smooth the handoff into results. Set to `false` for the most minimal loading screen. |
+
+### Loading behavior
+
+Burst starts application discovery immediately. If discovery finishes within the fast-start grace window, the launcher opens directly to the results and skips the loading screen entirely. If discovery takes longer, burst keeps the prompt responsive, shows a short loading message, and carries any typed query into the results when discovery completes.
+
+With `ui.loading_polish = true`, the transition from loading to results is softened visually. Result updates after typing also transition only within the result area so the prompt and surrounding layout stay readable. Set `ui.loading_polish = false` under `[ui]` to hide the loading message and skip the loading-to-results polish while keeping startup behavior unchanged. If it is placed under `[layout]`, the config is invalid and burst falls back to built-in defaults.
 
 ### Worked example: centered grid with breathing room
 
@@ -241,9 +248,14 @@ Named colors: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `whi
 ### Minimal example
 
 ```toml
+[layout]
+padding_horizontal = 0
+padding_vertical = 0
+
 [ui]
 prompt = "λ "
 page_size = 8
+loading_polish = false
 
 [colors]
 banner   = "#ff79c6"
@@ -285,7 +297,7 @@ Press `Escape` to close.
 
 ## Performance
 
-Burst is tuned for instant launch. The release profile enables `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`, and `panic = "abort"` (see [`Cargo.toml`](Cargo.toml)) to minimize binary size and cold-start latency.
+Burst is tuned for instant launch. The release profile enables `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`, and `panic = "abort"` (see [`Cargo.toml`](Cargo.toml)) to minimize binary size and cold-start latency. Loading polish is cosmetic only; keep using the startup benchmark to catch discovery, config, or history regressions that a smoother handoff could otherwise make less obvious.
 
 Measure startup end-to-end on your machine:
 
