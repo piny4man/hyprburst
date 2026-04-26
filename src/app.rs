@@ -8,7 +8,7 @@ use ratatui::prelude::*;
 
 use crate::config::Config;
 use crate::desktop::{DesktopEntry, discover_apps};
-use crate::effects::FadeIn;
+use crate::effects::{EffectPrototype, FadeIn, PrototypeEffect};
 use crate::history::History;
 use crate::launcher::load_scores;
 use crate::startup::StartupState;
@@ -35,6 +35,7 @@ pub struct App {
     pub running: bool,
     startup: StartupState,
     fade_in: FadeIn,
+    loading_transition: Option<PrototypeEffect>,
     discovery: Option<DiscoveryReceiver>,
 }
 
@@ -68,6 +69,7 @@ impl App {
             running,
             startup,
             fade_in: FadeIn::new(),
+            loading_transition: None,
             discovery,
         }
     }
@@ -89,7 +91,12 @@ impl App {
 
         match discovery.try_recv() {
             Ok(Ok(payload)) => {
+                let transition = self.startup.loading_polish_enabled();
                 self.startup.finish_loading(payload.apps, payload.scores);
+                if transition {
+                    self.loading_transition =
+                        Some(PrototypeEffect::new(EffectPrototype::LoadingCoalesce));
+                }
                 self.running = self.startup.is_running();
             }
             Ok(Err(error)) => {
@@ -108,6 +115,14 @@ impl App {
     }
 
     pub fn apply_effects(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if let Some(effect) = &mut self.loading_transition {
+            effect.apply(frame, area);
+            if effect.is_done() {
+                self.loading_transition = None;
+            }
+            return;
+        }
+
         if !self.fade_in.is_done() {
             self.fade_in.apply(frame, area);
         }
@@ -180,5 +195,41 @@ mod tests {
             app.handle_key(code);
             assert!(app.running, "App should still running after {:?}", code);
         }
+    }
+
+    #[test]
+    fn slow_discovery_arms_loading_transition() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::with_discovery_receiver(Config::default(), rx, Duration::ZERO);
+
+        tx.send(Ok(DiscoveryPayload::from_apps(vec![DesktopEntry {
+            id: "firefox".to_string(),
+            name: "Firefox".to_string(),
+            icon: String::new(),
+            exec: "firefox".to_string(),
+        }])))
+        .unwrap();
+        app.poll_discovery();
+
+        assert!(app.loading_transition.is_some());
+    }
+
+    #[test]
+    fn disabled_loading_polish_skips_loading_transition() {
+        let (tx, rx) = mpsc::channel();
+        let mut config = Config::default();
+        config.ui.loading_polish = false;
+        let mut app = App::with_discovery_receiver(config, rx, Duration::ZERO);
+
+        tx.send(Ok(DiscoveryPayload::from_apps(vec![DesktopEntry {
+            id: "firefox".to_string(),
+            name: "Firefox".to_string(),
+            icon: String::new(),
+            exec: "firefox".to_string(),
+        }])))
+        .unwrap();
+        app.poll_discovery();
+
+        assert!(app.loading_transition.is_none());
     }
 }

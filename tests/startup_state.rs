@@ -1,9 +1,10 @@
-use burst::config::{Config, UiConfig};
+use burst::config::{Colors, Config, LayoutConfig, LayoutMode, UiConfig};
 use burst::desktop::DesktopEntry;
 use burst::startup::StartupState;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use ratatui::widgets::Widget;
 
 fn config() -> Config {
@@ -39,6 +40,16 @@ fn frame_contains(buf: &Buffer, needle: &str) -> bool {
             .map(|x| buf[(x, y)].symbol().to_string())
             .collect();
         row.contains(needle)
+    })
+}
+
+fn first_cell_with(buf: &Buffer, needle: &str) -> Option<(u16, u16)> {
+    let area = *buf.area();
+    (0..area.height).find_map(|y| {
+        let row: String = (0..area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        row.find(needle).map(|x| (x as u16, y))
     })
 }
 
@@ -90,4 +101,41 @@ fn buffer_rendering_covers_loading_loaded_empty_and_error_states() {
         &render(&mut failed, 60, 7),
         "Failed to discover applications"
     ));
+}
+
+#[test]
+fn loading_rendering_degrades_cleanly_without_list_area() {
+    let mut loading = StartupState::loading(config());
+
+    let buf = render(&mut loading, 12, 1);
+
+    assert!(frame_contains(&buf, "> "));
+    assert!(!frame_contains(&buf, "Loading applications"));
+}
+
+#[test]
+fn loading_polish_works_with_grid_custom_colors_and_icons_disabled() {
+    let cfg = Config {
+        ui: UiConfig {
+            banner: String::new(),
+            show_icons: false,
+            ..UiConfig::default()
+        },
+        layout: LayoutConfig {
+            mode: LayoutMode::Grid,
+            min_column_width: 8,
+            ..LayoutConfig::default()
+        },
+        colors: Colors {
+            empty: Color::LightBlue,
+            ..Colors::default()
+        },
+        ..Config::default()
+    };
+    let mut loading = StartupState::loading(cfg);
+
+    let buf = render(&mut loading, 60, 10);
+    let (x, y) = first_cell_with(&buf, "Loading applications").unwrap();
+
+    assert_eq!(buf[(x, y)].fg, Color::LightBlue);
 }
