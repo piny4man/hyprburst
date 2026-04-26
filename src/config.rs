@@ -595,6 +595,24 @@ loading_polish = false
     }
 
     #[test]
+    fn loading_polish_does_not_reset_layout_padding() {
+        let cfg = Config::from_toml_str(
+            r#"[layout]
+padding_horizontal = 6
+padding_vertical = 3
+
+[ui]
+loading_polish = false
+"#,
+        )
+        .unwrap();
+
+        assert!(!cfg.ui.loading_polish);
+        assert_eq!(cfg.layout.padding_horizontal, 6);
+        assert_eq!(cfg.layout.padding_vertical, 3);
+    }
+
+    #[test]
     fn partial_toml_fills_missing_with_defaults() {
         let toml = r#"
 [ui]
