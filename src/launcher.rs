@@ -38,6 +38,17 @@ impl Launcher {
         Self::from_parts(config, apps, query, running, None, HashMap::new())
     }
 
+    pub(crate) fn from_discovered(
+        config: Config,
+        apps: Vec<DesktopEntry>,
+        query: String,
+        scores: HashMap<String, f64>,
+    ) -> Self {
+        let running = !apps.is_empty();
+        let history = History::open().ok();
+        Self::from_parts(config, apps, query, running, history, scores)
+    }
+
     fn from_parts(
         config: Config,
         apps: Vec<DesktopEntry>,
@@ -174,7 +185,7 @@ pub(crate) fn icon_glyph_for(app: &DesktopEntry) -> &'static str {
     fallback_glyph(&app.icon, &app.name)
 }
 
-fn load_scores(history: &History) -> HashMap<String, f64> {
+pub(crate) fn load_scores(history: &History) -> HashMap<String, f64> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

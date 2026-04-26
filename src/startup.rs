@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::crossterm::event::KeyCode;
 use ratatui::prelude::*;
 
@@ -75,6 +77,37 @@ impl StartupState {
             false,
             StartupStatus::Failed(error),
         ))
+    }
+
+    pub(crate) fn finish_loading(&mut self, apps: Vec<DesktopEntry>, scores: HashMap<String, f64>) {
+        let Self::Loading(shell) = self else {
+            return;
+        };
+
+        let launcher =
+            Launcher::from_discovered(shell.config.clone(), apps, shell.query.clone(), scores);
+        *self = if launcher.apps.is_empty() {
+            Self::Empty(StartupShell::new(
+                launcher.config.clone(),
+                launcher.query.clone(),
+                false,
+                StartupStatus::Empty,
+            ))
+        } else {
+            Self::Loaded(launcher)
+        };
+    }
+
+    pub(crate) fn fail_loading(&mut self, error: String) {
+        let Self::Loading(shell) = self else {
+            return;
+        };
+        *self = Self::Failed(StartupShell::new(
+            shell.config.clone(),
+            shell.query.clone(),
+            false,
+            StartupStatus::Failed(error),
+        ));
     }
 
     pub fn handle_key(&mut self, code: KeyCode) {
