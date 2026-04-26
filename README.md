@@ -319,4 +319,6 @@ CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startu
 
 ## License
 
-MIT
+Burst is licensed under the GNU General Public License v3.0 or later (`GPL-3.0-or-later`). See [LICENSE](LICENSE).
+
+Official releases are controlled by the project owner. See [MAINTAINERS.md](MAINTAINERS.md) for crates.io, AUR, and release ownership policy.

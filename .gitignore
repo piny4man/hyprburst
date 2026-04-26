@@ -2,3 +2,5 @@
 .agents
 .claude
 skills-lock.json
+/plans
+/prds
