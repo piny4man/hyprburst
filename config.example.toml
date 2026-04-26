@@ -56,8 +56,8 @@
 # args = ["--class={class}", "-e", "{cmd}"]
 
 # Layout knobs controlling mode, padding, banner centring, and separator line.
-# Defaults preserve today's visual output (list mode, no padding, left-aligned
-# banner, no separator). Values out of range fall back to defaults with a
+# Defaults use list mode with a small amount of breathing room, a left-aligned
+# banner, and no separator. Values out of range fall back to defaults with a
 # warning.
 [layout]
 # Render mode: "list" (one entry per row) or "grid" (entries flow across
@@ -83,10 +83,10 @@
 # Draw a single-row separator line between the prompt and the result list.
 # separator = false
 
-# UI chrome — banner, prompt, paging, icons, selection marker, and cursor glyph.
-# Defaults preserve today's render. Invalid values (multi-char cursor_char,
-# empty selected_marker, page_size = 0) print a stderr warning and fall back
-# to defaults (page_size = 0 is a hard error).
+# UI chrome — banner, prompt, loading polish, paging, icons, selection marker,
+# and cursor glyph. Invalid values (multi-char cursor_char, empty
+# selected_marker, page_size = 0) print a stderr warning and fall back to
+# defaults (page_size = 0 is a hard error).
 [ui]
 # Multi-line ASCII banner shown above the prompt. Use a TOML multi-line string
 # ("""...""") to preserve newlines. Set to "" to hide the banner.
@@ -103,6 +103,12 @@
 
 # Number of entries shown per page (PageUp/PageDown step size). Must be >= 1.
 # page_size = 10
+
+# Show a loading message if discovery takes longer than the fast-start grace
+# window and soften the handoff into results. Fast discovery still skips the
+# loading screen entirely. Keep this under [ui]; placing it under [layout]
+# makes the config invalid. Set to false for the most minimal loading UI.
+# loading_polish = true
 
 # Show Nerd Font icons before each app name. Set to false on terminals without
 # a Nerd Font to avoid tofu squares.
