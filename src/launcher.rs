@@ -30,36 +30,9 @@ impl Launcher {
         let running = !apps.is_empty();
         let history = History::open().ok();
         let scores = history.as_ref().map(load_scores).unwrap_or_default();
-        Self::from_parts(config, apps, String::new(), running, history, scores)
-    }
-
-    pub(crate) fn from_apps(config: Config, apps: Vec<DesktopEntry>, query: String) -> Self {
-        let running = !apps.is_empty();
-        Self::from_parts(config, apps, query, running, None, HashMap::new())
-    }
-
-    pub(crate) fn from_discovered(
-        config: Config,
-        apps: Vec<DesktopEntry>,
-        query: String,
-        scores: HashMap<String, f64>,
-    ) -> Self {
-        let running = !apps.is_empty();
-        let history = History::open().ok();
-        Self::from_parts(config, apps, query, running, history, scores)
-    }
-
-    fn from_parts(
-        config: Config,
-        apps: Vec<DesktopEntry>,
-        query: String,
-        running: bool,
-        history: Option<History>,
-        scores: HashMap<String, f64>,
-    ) -> Self {
         let mut launcher = Self {
             apps,
-            query,
+            query: String::new(),
             filtered: Vec::new(),
             selected_index: 0,
             running,
@@ -185,7 +158,7 @@ pub(crate) fn icon_glyph_for(app: &DesktopEntry) -> &'static str {
     fallback_glyph(&app.icon, &app.name)
 }
 
-pub(crate) fn load_scores(history: &History) -> HashMap<String, f64> {
+fn load_scores(history: &History) -> HashMap<String, f64> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

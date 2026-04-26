@@ -8,6 +8,5 @@ pub mod input;
 pub mod launcher;
 pub mod layout;
 pub mod search;
-pub mod startup;
 pub mod terminal;
 pub mod terminal_resolver;
