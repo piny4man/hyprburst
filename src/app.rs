@@ -3,28 +3,28 @@ use ratatui::prelude::*;
 
 use crate::config::Config;
 use crate::effects::FadeIn;
-use crate::launcher::Launcher;
+use crate::startup::StartupState;
 
 pub struct App {
     pub running: bool,
-    launcher: Launcher,
+    startup: StartupState,
     fade_in: FadeIn,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
-        let launcher = Launcher::new(config);
-        let running = launcher.running;
+        let startup = StartupState::discover(config);
+        let running = startup.is_running();
         Self {
             running,
-            launcher,
+            startup,
             fade_in: FadeIn::new(),
         }
     }
 
     pub fn handle_key(&mut self, code: KeyCode) {
-        self.launcher.handle_key(code);
-        self.running = self.launcher.running;
+        self.startup.handle_key(code);
+        self.running = self.startup.is_running();
     }
 
     pub fn apply_effects(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -36,7 +36,7 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        self.launcher.render(area, buf);
+        self.startup.render(area, buf);
     }
 }
 
