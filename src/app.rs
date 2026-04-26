@@ -8,7 +8,7 @@ use ratatui::prelude::*;
 
 use crate::config::Config;
 use crate::desktop::{DesktopEntry, discover_apps};
-use crate::effects::{EffectPrototype, FadeIn, PrototypeEffect};
+use crate::effects::{EffectPrototype, FadeIn, PrototypeEffect, ResultTransition};
 use crate::history::History;
 use crate::launcher::load_scores;
 use crate::startup::StartupState;
@@ -36,6 +36,7 @@ pub struct App {
     startup: StartupState,
     fade_in: FadeIn,
     loading_transition: Option<PrototypeEffect>,
+    result_transition: Option<ResultTransition>,
     discovery: Option<DiscoveryReceiver>,
 }
 
@@ -70,12 +71,20 @@ impl App {
             startup,
             fade_in: FadeIn::new(),
             loading_transition: None,
+            result_transition: None,
             discovery,
         }
     }
 
     pub fn handle_key(&mut self, code: KeyCode) {
+        let previous_query = self.startup.query().to_string();
         self.startup.handle_key(code);
+        if self.startup.has_loaded_results() && self.startup.query() != previous_query {
+            match &mut self.result_transition {
+                Some(transition) => transition.restart(),
+                None => self.result_transition = Some(ResultTransition::new()),
+            }
+        }
         self.running = self.startup.is_running();
         self.poll_discovery();
     }
@@ -119,6 +128,16 @@ impl App {
             effect.apply(frame, area);
             if effect.is_done() {
                 self.loading_transition = None;
+            }
+            return;
+        }
+
+        if let Some(effect_area) = self.startup.result_transition_area(area)
+            && let Some(effect) = &mut self.result_transition
+        {
+            effect.apply(frame, effect_area);
+            if effect.is_done() {
+                self.result_transition = None;
             }
             return;
         }
@@ -231,5 +250,49 @@ mod tests {
         app.poll_discovery();
 
         assert!(app.loading_transition.is_none());
+    }
+
+    #[test]
+    fn query_change_arms_result_area_transition() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(DiscoveryPayload::from_apps(vec![DesktopEntry {
+            id: "firefox".to_string(),
+            name: "Firefox".to_string(),
+            icon: String::new(),
+            exec: "firefox".to_string(),
+        }])))
+        .unwrap();
+        let mut app = App::with_discovery_receiver(Config::default(), rx, Duration::from_millis(1));
+
+        app.handle_key(KeyCode::Char('f'));
+
+        assert!(app.result_transition.is_some());
+    }
+
+    #[test]
+    fn rapid_query_change_restarts_result_area_transition() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(DiscoveryPayload::from_apps(vec![DesktopEntry {
+            id: "firefox".to_string(),
+            name: "Firefox".to_string(),
+            icon: String::new(),
+            exec: "firefox".to_string(),
+        }])))
+        .unwrap();
+        let mut app = App::with_discovery_receiver(Config::default(), rx, Duration::from_millis(1));
+
+        app.handle_key(KeyCode::Char('f'));
+        let area = Rect::new(0, 0, 8, 2);
+        let mut buf = Buffer::empty(area);
+        app.result_transition.as_mut().unwrap().apply_to_buffer(
+            &mut buf,
+            area,
+            Duration::from_millis(1_000),
+        );
+        assert!(app.result_transition.as_ref().unwrap().is_done());
+
+        app.handle_key(KeyCode::Char('i'));
+
+        assert!(!app.result_transition.as_ref().unwrap().is_done());
     }
 }
