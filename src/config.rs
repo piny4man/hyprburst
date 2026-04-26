@@ -64,6 +64,7 @@ pub struct UiConfig {
     pub banner: String,
     pub prompt: String,
     pub page_size: usize,
+    pub loading_polish: bool,
     pub show_icons: bool,
     pub selected_marker: String,
     pub cursor_char: String,
@@ -91,6 +92,7 @@ impl Default for UiConfig {
             banner: DEFAULT_BANNER.to_string(),
             prompt: DEFAULT_PROMPT.to_string(),
             page_size: DEFAULT_PAGE_SIZE,
+            loading_polish: true,
             show_icons: true,
             selected_marker: DEFAULT_SELECTED_MARKER.to_string(),
             cursor_char: DEFAULT_CURSOR_CHAR.to_string(),
@@ -228,6 +230,7 @@ struct RawUi {
     banner: Option<String>,
     prompt: Option<String>,
     page_size: Option<usize>,
+    loading_polish: Option<bool>,
     show_icons: Option<bool>,
     selected_marker: Option<String>,
     cursor_char: Option<String>,
@@ -333,6 +336,7 @@ impl RawUi {
             banner: self.banner.unwrap_or(defaults.banner),
             prompt: self.prompt.unwrap_or(defaults.prompt),
             page_size: self.page_size.unwrap_or(defaults.page_size),
+            loading_polish: self.loading_polish.unwrap_or(defaults.loading_polish),
             show_icons: self.show_icons.unwrap_or(defaults.show_icons),
             selected_marker,
             cursor_char,
@@ -534,6 +538,7 @@ mod tests {
         assert!(!cfg.ui.banner.is_empty());
         assert_eq!(cfg.ui.prompt, "> ");
         assert_eq!(cfg.ui.page_size, 10);
+        assert!(cfg.ui.loading_polish);
         assert_eq!(cfg.colors.prompt, Color::Cyan);
         assert_eq!(cfg.colors.selected, Color::Yellow);
     }
@@ -570,10 +575,23 @@ empty = "white"
         assert_eq!(cfg.ui.banner, "hello");
         assert_eq!(cfg.ui.prompt, "$ ");
         assert_eq!(cfg.ui.page_size, 5);
+        assert!(cfg.ui.loading_polish);
         assert_eq!(cfg.colors.banner, Color::Red);
         assert_eq!(cfg.colors.prompt, Color::Blue);
         assert_eq!(cfg.colors.selected, Color::Green);
         assert_eq!(cfg.colors.empty, Color::White);
+    }
+
+    #[test]
+    fn loading_polish_can_be_disabled() {
+        let cfg = Config::from_toml_str(
+            r#"[ui]
+loading_polish = false
+"#,
+        )
+        .unwrap();
+
+        assert!(!cfg.ui.loading_polish);
     }
 
     #[test]

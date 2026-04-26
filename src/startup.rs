@@ -132,6 +132,15 @@ impl StartupState {
             Self::Loading(shell) | Self::Empty(shell) | Self::Failed(shell) => &shell.query,
         }
     }
+
+    pub(crate) fn loading_polish_enabled(&self) -> bool {
+        match self {
+            Self::Loaded(launcher) => launcher.config.ui.loading_polish,
+            Self::Loading(shell) | Self::Empty(shell) | Self::Failed(shell) => {
+                shell.config.ui.loading_polish
+            }
+        }
+    }
 }
 
 impl StartupShell {
@@ -159,11 +168,14 @@ impl StartupShell {
         }
     }
 
-    fn status_message(&self) -> &str {
+    fn status_message(&self) -> Option<&str> {
         match &self.status {
-            StartupStatus::Loading => "Loading applications...",
-            StartupStatus::Empty => "No applications found",
-            StartupStatus::Failed(_) => "Failed to discover applications",
+            StartupStatus::Loading if self.config.ui.loading_polish => {
+                Some("Loading applications...")
+            }
+            StartupStatus::Loading => None,
+            StartupStatus::Empty => Some("No applications found"),
+            StartupStatus::Failed(_) => Some("Failed to discover applications"),
         }
     }
 }
@@ -243,8 +255,12 @@ impl Widget for &mut StartupShell {
             return;
         }
 
+        let Some(status_message) = self.status_message() else {
+            return;
+        };
+
         let style = Style::new().fg(self.config.colors.empty);
-        buf.set_string(list_area.x, list_area.y, self.status_message(), style);
+        buf.set_string(list_area.x, list_area.y, status_message, style);
         if let StartupStatus::Failed(error) = &self.status
             && list_area.height > 1
         {

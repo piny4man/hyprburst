@@ -97,6 +97,25 @@ fn pending_discovery_renders_loading_without_blocking_startup() {
 }
 
 #[test]
+fn pending_discovery_can_disable_loading_polish() {
+    let (_tx, rx) = mpsc::channel();
+    let cfg = Config {
+        ui: UiConfig {
+            banner: String::new(),
+            loading_polish: false,
+            ..UiConfig::default()
+        },
+        ..Config::default()
+    };
+    let mut app = App::with_discovery_receiver(cfg, rx, Duration::ZERO);
+
+    let buf = render(&mut app, 60, 10);
+
+    assert!(app.running);
+    assert!(!frame_contains(&buf, "Loading applications"));
+}
+
+#[test]
 fn fast_discovery_skips_loading_state() {
     let (tx, rx) = mpsc::channel();
     tx.send(Ok(DiscoveryPayload::from_apps(vec![app_entry(
