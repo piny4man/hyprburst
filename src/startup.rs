@@ -141,6 +141,18 @@ impl StartupState {
             }
         }
     }
+
+    pub(crate) fn has_loaded_results(&self) -> bool {
+        matches!(self, Self::Loaded(_))
+    }
+
+    pub(crate) fn result_transition_area(&self, area: Rect) -> Option<Rect> {
+        let Self::Loaded(launcher) = self else {
+            return None;
+        };
+        let list_area = layout::compute(area, &launcher.config).list;
+        (list_area.width > 0 && list_area.height > 0).then_some(list_area)
+    }
 }
 
 impl StartupShell {

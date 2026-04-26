@@ -167,6 +167,41 @@ impl Default for FadeIn {
     }
 }
 
+pub struct ResultTransition {
+    effect: PrototypeEffect,
+}
+
+impl ResultTransition {
+    pub fn new() -> Self {
+        Self {
+            effect: PrototypeEffect::new(EffectPrototype::QuerySweep),
+        }
+    }
+
+    pub fn restart(&mut self) {
+        *self = Self::new();
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.effect.is_done()
+    }
+
+    pub fn apply(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        self.effect.apply(frame, area);
+    }
+
+    #[cfg(test)]
+    pub fn apply_to_buffer(&mut self, buf: &mut Buffer, area: Rect, elapsed: std::time::Duration) {
+        self.effect.apply_to_buffer(buf, area, elapsed);
+    }
+}
+
+impl Default for ResultTransition {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -261,6 +296,32 @@ mod tests {
         effect.apply_to_buffer(&mut buf, area, Duration::from_millis(1_000));
 
         assert!(effect.is_done());
+    }
+
+    #[test]
+    fn result_transition_lifecycle_completes_at_wrapper_boundary() {
+        let mut transition = ResultTransition::new();
+        let area = Rect::new(0, 0, 8, 2);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(0, 0, "Firefox", Style::new().fg(Color::White));
+
+        transition.apply_to_buffer(&mut buf, area, Duration::from_millis(1_000));
+
+        assert!(transition.is_done());
+    }
+
+    #[test]
+    fn result_transition_restart_replaces_completed_effect() {
+        let mut transition = ResultTransition::new();
+        let area = Rect::new(0, 0, 8, 2);
+        let mut buf = Buffer::empty(area);
+
+        transition.apply_to_buffer(&mut buf, area, Duration::from_millis(1_000));
+        assert!(transition.is_done());
+
+        transition.restart();
+
+        assert!(!transition.is_done());
     }
 
     #[test]
