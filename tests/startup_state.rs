@@ -66,28 +66,28 @@ fn escape_stops_loading_state() {
 fn buffer_rendering_covers_loading_loaded_empty_and_error_states() {
     let mut loading = StartupState::loading(config());
     loading.handle_key(KeyCode::Char('f'));
-    assert!(frame_contains(&render(&mut loading, 40, 5), "> f"));
+    assert!(frame_contains(&render(&mut loading, 40, 7), "> f"));
     assert!(frame_contains(
-        &render(&mut loading, 40, 5),
+        &render(&mut loading, 40, 7),
         "Loading applications"
     ));
 
     let mut loaded = StartupState::loaded(config(), vec![app("Firefox")], "fire".to_string());
-    assert!(frame_contains(&render(&mut loaded, 40, 5), "> fire"));
-    assert!(frame_contains(&render(&mut loaded, 40, 5), "Firefox"));
+    assert!(frame_contains(&render(&mut loaded, 40, 7), "> fire"));
+    assert!(frame_contains(&render(&mut loaded, 40, 7), "Firefox"));
 
     let mut empty = StartupState::empty(config(), "abc".to_string());
-    assert!(frame_contains(&render(&mut empty, 40, 5), "> abc"));
+    assert!(frame_contains(&render(&mut empty, 40, 7), "> abc"));
     assert!(frame_contains(
-        &render(&mut empty, 40, 5),
+        &render(&mut empty, 40, 7),
         "No applications found"
     ));
 
     let mut failed =
         StartupState::failed(config(), "abc".to_string(), "permission denied".to_string());
-    assert!(frame_contains(&render(&mut failed, 60, 5), "> abc"));
+    assert!(frame_contains(&render(&mut failed, 60, 7), "> abc"));
     assert!(frame_contains(
-        &render(&mut failed, 60, 5),
+        &render(&mut failed, 60, 7),
         "Failed to discover applications"
     ));
 }

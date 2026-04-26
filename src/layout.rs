@@ -100,28 +100,47 @@ mod tests {
     }
 
     #[test]
-    fn default_config_preserves_today_geometry() {
+    fn default_config_uses_padded_geometry() {
         let cfg = Config::default();
         let area = Rect::new(0, 0, 80, 24);
         let rects = compute(area, &cfg);
 
         let banner_lines = cfg.ui.banner.lines().count() as u16;
-        assert_eq!(rects.banner.x, 0);
-        assert_eq!(rects.banner.y, 0);
-        assert_eq!(rects.banner.width, 80);
+        assert_eq!(rects.banner.x, 4);
+        assert_eq!(rects.banner.y, 2);
+        assert_eq!(rects.banner.width, 72);
         assert_eq!(rects.banner.height, banner_lines);
 
-        assert_eq!(rects.input.x, 0);
-        assert_eq!(rects.input.y, banner_lines);
-        assert_eq!(rects.input.width, 80);
+        assert_eq!(rects.input.x, 4);
+        assert_eq!(rects.input.y, banner_lines + 2);
+        assert_eq!(rects.input.width, 72);
         assert_eq!(rects.input.height, 1);
 
         assert!(rects.separator.is_none());
 
-        assert_eq!(rects.list.x, 0);
-        assert_eq!(rects.list.y, banner_lines + 1);
-        assert_eq!(rects.list.width, 80);
-        assert_eq!(rects.list.height, 24 - banner_lines - 1);
+        assert_eq!(rects.list.x, 4);
+        assert_eq!(rects.list.y, banner_lines + 3);
+        assert_eq!(rects.list.width, 72);
+        assert_eq!(rects.list.height, 20 - banner_lines - 1);
+    }
+
+    #[test]
+    fn explicit_zero_padding_preserves_dense_geometry() {
+        let cfg = config_with_layout(LayoutConfig {
+            padding_horizontal: 0,
+            padding_vertical: 0,
+            ..LayoutConfig::default()
+        });
+        let area = Rect::new(0, 0, 80, 24);
+        let rects = compute(area, &cfg);
+
+        let banner_lines = cfg.ui.banner.lines().count() as u16;
+        assert_eq!(rects.banner, Rect::new(0, 0, 80, banner_lines));
+        assert_eq!(rects.input, Rect::new(0, banner_lines, 80, 1));
+        assert_eq!(
+            rects.list,
+            Rect::new(0, banner_lines + 1, 80, 24 - banner_lines - 1)
+        );
     }
 
     #[test]
@@ -140,7 +159,7 @@ mod tests {
             .map(|l| l.chars().count() as u16)
             .max()
             .unwrap_or(0);
-        let expected_x = (80 - banner_width) / 2;
+        let expected_x = 4 + (72 - banner_width) / 2;
         assert_eq!(rects.banner.x, expected_x);
         assert_eq!(rects.banner.width, banner_width);
     }
@@ -205,7 +224,7 @@ mod tests {
         let rects = compute(area, &cfg);
 
         assert_eq!(rects.banner.height, 0);
-        assert_eq!(rects.input.y, 0);
+        assert_eq!(rects.input.y, 2);
     }
 
     #[test]
@@ -225,17 +244,17 @@ mod tests {
         });
         let area = Rect::new(0, 0, 80, 24);
         let rects = compute(area, &cfg);
-        assert_eq!(rects.list.width, 80);
-        assert_eq!(rects.columns, 4);
+        assert_eq!(rects.list.width, 72);
+        assert_eq!(rects.columns, 3);
     }
 
     #[test]
     fn grid_mode_column_count_at_typical_widths() {
         let cases = [
-            (80_u16, 20_u16, 4),
-            (120, 20, 6),
+            (80_u16, 20_u16, 3),
+            (120, 20, 5),
             (100, 30, 3),
-            (200, 40, 5),
+            (200, 40, 4),
         ];
         for (width, min_width, expected_cols) in cases {
             let cfg = config_with_layout(LayoutConfig {
