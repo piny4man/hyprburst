@@ -106,22 +106,22 @@ mod tests {
         let rects = compute(area, &cfg);
 
         let banner_lines = cfg.ui.banner.lines().count() as u16;
-        assert_eq!(rects.banner.x, 2);
-        assert_eq!(rects.banner.y, 1);
-        assert_eq!(rects.banner.width, 76);
+        assert_eq!(rects.banner.x, 4);
+        assert_eq!(rects.banner.y, 2);
+        assert_eq!(rects.banner.width, 72);
         assert_eq!(rects.banner.height, banner_lines);
 
-        assert_eq!(rects.input.x, 2);
-        assert_eq!(rects.input.y, banner_lines + 1);
-        assert_eq!(rects.input.width, 76);
+        assert_eq!(rects.input.x, 4);
+        assert_eq!(rects.input.y, banner_lines + 2);
+        assert_eq!(rects.input.width, 72);
         assert_eq!(rects.input.height, 1);
 
         assert!(rects.separator.is_none());
 
-        assert_eq!(rects.list.x, 2);
-        assert_eq!(rects.list.y, banner_lines + 2);
-        assert_eq!(rects.list.width, 76);
-        assert_eq!(rects.list.height, 22 - banner_lines - 1);
+        assert_eq!(rects.list.x, 4);
+        assert_eq!(rects.list.y, banner_lines + 3);
+        assert_eq!(rects.list.width, 72);
+        assert_eq!(rects.list.height, 20 - banner_lines - 1);
     }
 
     #[test]
@@ -159,7 +159,7 @@ mod tests {
             .map(|l| l.chars().count() as u16)
             .max()
             .unwrap_or(0);
-        let expected_x = 2 + (76 - banner_width) / 2;
+        let expected_x = 4 + (72 - banner_width) / 2;
         assert_eq!(rects.banner.x, expected_x);
         assert_eq!(rects.banner.width, banner_width);
     }
@@ -224,7 +224,7 @@ mod tests {
         let rects = compute(area, &cfg);
 
         assert_eq!(rects.banner.height, 0);
-        assert_eq!(rects.input.y, 1);
+        assert_eq!(rects.input.y, 2);
     }
 
     #[test]
@@ -244,7 +244,7 @@ mod tests {
         });
         let area = Rect::new(0, 0, 80, 24);
         let rects = compute(area, &cfg);
-        assert_eq!(rects.list.width, 76);
+        assert_eq!(rects.list.width, 72);
         assert_eq!(rects.columns, 3);
     }
 

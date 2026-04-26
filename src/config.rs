@@ -18,8 +18,8 @@ pub(crate) const MAX_PADDING: u16 = 32;
 pub(crate) const DEFAULT_SELECTED_MARKER: &str = "> ";
 pub(crate) const DEFAULT_CURSOR_CHAR: &str = "█";
 pub(crate) const DEFAULT_MIN_COLUMN_WIDTH: u16 = 20;
-pub(crate) const DEFAULT_PADDING_HORIZONTAL: u16 = 2;
-pub(crate) const DEFAULT_PADDING_VERTICAL: u16 = 1;
+pub(crate) const DEFAULT_PADDING_HORIZONTAL: u16 = 4;
+pub(crate) const DEFAULT_PADDING_VERTICAL: u16 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
@@ -882,8 +882,8 @@ args = ["--class={class}", "-e", "{cmd}"]
     #[test]
     fn default_layout_uses_breathing_room() {
         let cfg = Config::default();
-        assert_eq!(cfg.layout.padding_horizontal, 2);
-        assert_eq!(cfg.layout.padding_vertical, 1);
+        assert_eq!(cfg.layout.padding_horizontal, 4);
+        assert_eq!(cfg.layout.padding_vertical, 2);
         assert!(!cfg.layout.center_banner);
         assert!(!cfg.layout.separator);
     }

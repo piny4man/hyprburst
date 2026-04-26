@@ -504,12 +504,12 @@ mod tests {
             },
             last_columns: 1,
         };
-        let area = Rect::new(0, 0, 40, 5);
+        let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
         (&mut launcher).render(area, &mut buf);
 
         let row = (0..area.width)
-            .map(|x| buf[(x, 2)].symbol().to_string())
+            .map(|x| buf[(x, 3)].symbol().to_string())
             .collect::<String>();
         assert!(
             row.contains("\u{f269}") && row.contains("Firefox"),
@@ -556,11 +556,11 @@ mod tests {
         };
         let mut launcher = launcher_with_single_app(cfg);
 
-        let area = Rect::new(0, 0, 40, 5);
+        let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
         (&mut launcher).render(area, &mut buf);
 
-        let row = row_at(&buf, 2, area);
+        let row = row_at(&buf, 3, area);
         assert!(
             !row.contains('\u{f269}') && row.contains("Firefox"),
             "icon glyph should be suppressed, got {:?}",
@@ -580,11 +580,11 @@ mod tests {
         };
         let mut launcher = launcher_with_single_app(cfg);
 
-        let area = Rect::new(0, 0, 40, 5);
+        let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
         (&mut launcher).render(area, &mut buf);
 
-        let row = row_at(&buf, 2, area);
+        let row = row_at(&buf, 3, area);
         assert!(
             row.contains("» ") && row.contains("Firefox"),
             "expected custom marker on selected row, got {:?}",
@@ -608,7 +608,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         (&mut launcher).render(area, &mut buf);
 
-        let row = row_at(&buf, 1, area);
+        let row = row_at(&buf, 2, area);
         assert!(
             !row.contains('█'),
             "cursor glyph should be suppressed, got {:?}",
@@ -632,7 +632,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         (&mut launcher).render(area, &mut buf);
 
-        let row = row_at(&buf, 1, area);
+        let row = row_at(&buf, 2, area);
         assert!(
             row.contains('▏') && !row.contains('█'),
             "expected custom cursor glyph, got {:?}",
