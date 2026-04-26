@@ -205,6 +205,25 @@ fn typing_updates_visible_prompt() {
 }
 
 #[test]
+fn query_transition_keeps_prompt_and_results_readable() {
+    let mut app = app_with_entries(
+        no_banner_config(),
+        vec![
+            app_entry("firefox", "Firefox"),
+            app_entry("files", "Files"),
+            app_entry("calculator", "Calculator"),
+        ],
+    );
+
+    app.handle_key(KeyCode::Char('f'));
+    let buf = render(&mut app, 60, 10);
+
+    assert!(row_text(&buf, 2).contains("> f"));
+    assert!(frame_contains(&buf, "Firefox"));
+    assert!(frame_contains(&buf, "Files"));
+}
+
+#[test]
 fn backspace_reverts_prompt_characters() {
     let mut app = app_with_default_entries(no_banner_config());
     for c in "abc".chars() {
