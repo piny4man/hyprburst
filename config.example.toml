@@ -56,9 +56,8 @@
 # args = ["--class={class}", "-e", "{cmd}"]
 
 # Layout knobs controlling mode, padding, banner centring, and separator line.
-# Defaults use list mode with a small amount of breathing room, a left-aligned
-# banner, and no separator. Values out of range fall back to defaults with a
-# warning.
+# Defaults use list mode with modest padding, a left-aligned banner, and no
+# separator. Values out of range fall back to defaults with a warning.
 [layout]
 # Render mode: "list" (one entry per row) or "grid" (entries flow across
 # auto-fit columns). Defaults to "list". Unknown values are rejected.

@@ -157,8 +157,8 @@ Two sections cover everything about how burst renders on screen: `[layout]` cont
 |-----|------|---------|-------|
 | `layout.mode` | string | `"list"` | `"list"` for one entry per row, `"grid"` for column-aware navigation. |
 | `layout.min_column_width` | integer | `20` | Grid-mode only. Cells narrower than this collapse to fewer columns. Must be `>= 1`. |
-| `layout.padding_horizontal` | integer | `4` | Extra columns of whitespace on the left and right. Capped at 32; oversized values warn and fall back. Set to `0` for the densest layout. |
-| `layout.padding_vertical` | integer | `2` | Extra rows of whitespace above and below. Capped at 32. Set to `0` for the densest layout. |
+| `layout.padding_horizontal` | integer | `4` | Extra columns of whitespace on the left and right. Capped at 32; oversized values warn and fall back. |
+| `layout.padding_vertical` | integer | `2` | Extra rows of whitespace above and below. Capped at 32. |
 | `layout.center_banner` | bool | `false` | Horizontally center the banner inside the available width. |
 | `layout.separator` | bool | `false` | Draw a thin rule between banner/search and the result list. |
 
