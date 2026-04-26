@@ -18,6 +18,8 @@ pub(crate) const MAX_PADDING: u16 = 32;
 pub(crate) const DEFAULT_SELECTED_MARKER: &str = "> ";
 pub(crate) const DEFAULT_CURSOR_CHAR: &str = "█";
 pub(crate) const DEFAULT_MIN_COLUMN_WIDTH: u16 = 20;
+pub(crate) const DEFAULT_PADDING_HORIZONTAL: u16 = 2;
+pub(crate) const DEFAULT_PADDING_VERTICAL: u16 = 1;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
@@ -41,8 +43,8 @@ impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
             mode: LayoutMode::default(),
-            padding_horizontal: 0,
-            padding_vertical: 0,
+            padding_horizontal: DEFAULT_PADDING_HORIZONTAL,
+            padding_vertical: DEFAULT_PADDING_VERTICAL,
             center_banner: false,
             separator: false,
             min_column_width: DEFAULT_MIN_COLUMN_WIDTH,
@@ -878,12 +880,24 @@ args = ["--class={class}", "-e", "{cmd}"]
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn default_layout_preserves_today_visuals() {
+    fn default_layout_uses_breathing_room() {
         let cfg = Config::default();
-        assert_eq!(cfg.layout.padding_horizontal, 0);
-        assert_eq!(cfg.layout.padding_vertical, 0);
+        assert_eq!(cfg.layout.padding_horizontal, 2);
+        assert_eq!(cfg.layout.padding_vertical, 1);
         assert!(!cfg.layout.center_banner);
         assert!(!cfg.layout.separator);
+    }
+
+    #[test]
+    fn zero_padding_layout_values_override_defaults() {
+        let toml = r#"
+[layout]
+padding_horizontal = 0
+padding_vertical = 0
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.layout.padding_horizontal, 0);
+        assert_eq!(cfg.layout.padding_vertical, 0);
     }
 
     #[test]
