@@ -355,6 +355,43 @@ pub fn run_baseline_report() -> String {
     format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
 }
 
+/// Run the native-GUI POC variant against the contract and produce its
+/// [`Metrics`] column.
+///
+/// Paints headlessly by calling [`crate::gui::build_frame`] — the per-frame CPU
+/// work the live window does before handing nodes to Skia — exactly as
+/// [`run_baseline`] paints via `render_core`. GPU compositing is excluded from
+/// both columns, so the input-latency/fps/jank figures compare like for like;
+/// the live window's real cold-start and peak RSS come from the
+/// `hyprburst-spike-gui` binary's own report. Warm-toggle stays `N/A`: like the
+/// baseline TUI, this POC spawns per launch and keeps no resident window to
+/// hide/show (a resident-window variant would be a migration follow-up).
+#[cfg(feature = "freya-spike")]
+pub fn run_native_gui() -> Metrics {
+    let clock = MonotonicClock::new();
+    let config = Config::default();
+    let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
+    core.set_columns(crate::gui::GRID_COLUMNS);
+    let input = scripted_input();
+
+    let raw = measure_frames(&clock, &mut core, &input, |c| {
+        let view = c.view();
+        let frame = crate::gui::build_frame(&view, &config);
+        std::hint::black_box(&frame);
+    });
+
+    summarize(&raw, "native-gui", live_footprint_for(&["freya-spike"]))
+}
+
+/// Render the head-to-head bake-off table with the baseline TUI and native-GUI
+/// POC columns side by side, plus the machine-readable record. Available only
+/// with the `freya-spike` feature, which is what builds the native-GUI variant.
+#[cfg(feature = "freya-spike")]
+pub fn run_bake_off_report() -> String {
+    let metrics = [run_baseline(), run_native_gui()];
+    format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
+}
+
 /// Formats one metric into its table cell.
 type CellFmt = fn(&Metrics) -> String;
 
@@ -695,6 +732,45 @@ ratatui v0.30.0
         let json = to_json(&[sample_metrics()]);
         let expected = "[{\"variant\":\"baseline-tui\",\"cold_start_ns\":1234000,\"warm_toggle_ns\":null,\"input_latency_ns\":50000,\"fps\":60.0000,\"jank_count\":0,\"peak_rss_kb\":7388,\"binary_size_bytes\":4200000,\"dep_count\":87}]";
         assert_eq!(json, expected);
+    }
+
+    #[cfg(feature = "freya-spike")]
+    #[test]
+    fn native_gui_paint_closure_brackets_each_frame() {
+        // The native-GUI frame-timing hook: driving the core through
+        // `measure_frames` with the GUI's `build_frame` paint closure must
+        // bracket cold start and every scripted frame just like the baseline,
+        // so the harness times real per-frame work deterministically.
+        let config = Config::default();
+        let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
+        core.set_columns(crate::gui::GRID_COLUMNS);
+        let input = vec![LauncherAction::Insert('a'), LauncherAction::MoveDown];
+        // Reads: t0, t1 (cold), then before/after for each of 2 frames.
+        let clock = FakeClock::new(vec![0, 100, 200, 350, 400, 600]);
+
+        let raw = measure_frames(&clock, &mut core, &input, |c| {
+            let view = c.view();
+            let frame = crate::gui::build_frame(&view, &config);
+            std::hint::black_box(&frame);
+        });
+
+        assert_eq!(raw.cold_start_ns, 100);
+        assert_eq!(raw.frame_ns, vec![150, 200]);
+    }
+
+    #[cfg(feature = "freya-spike")]
+    #[test]
+    fn run_native_gui_populates_latency_and_footprint() {
+        let m = run_native_gui();
+        assert_eq!(m.variant, "native-gui");
+        assert!(m.cold_start_ns > 0);
+        assert!(m.input_latency_ns > 0);
+        assert!(m.fps > 0.0);
+        assert!(m.footprint.peak_rss_kb.is_some());
+        assert!(m.footprint.binary_size_bytes.is_some());
+        assert!(m.footprint.dep_count.is_some());
+        // Spawn-per-launch POC: no resident window to toggle.
+        assert_eq!(m.warm_toggle_ns, None);
     }
 
     #[test]

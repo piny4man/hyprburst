@@ -3,6 +3,8 @@ pub mod bench;
 pub mod config;
 pub mod desktop;
 pub mod effects;
+#[cfg(feature = "freya-spike")]
+pub mod gui;
 pub mod history;
 pub mod icon;
 pub mod input;

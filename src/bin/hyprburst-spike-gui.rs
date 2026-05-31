@@ -1,26 +1,27 @@
-//! Phase 3 viability probe for the Freya bake-off — the early kill-switch.
+//! Phase 4 native-GUI POC for the Freya bake-off.
 //!
-//! A deliberately thin Freya window: it opens on Hyprland, carries the app-id
-//! `hyprburst` (so the shipped windowrules apply), and stamps a first-frame
-//! timestamp through the shared instrumentation contract in [`hyprburst::bench`].
-//! It exists only to answer "does Freya boot in a viable ballpark and present as
-//! a styleable native window?" before either full POC is built. It grows into
-//! the real native-GUI launcher (`hyprburst-spike-gui`) in Phase 4.
+//! Grown from the Phase 3 viability probe into the real launcher: a Freya window
+//! that drives the shared [`hyprburst::launcher_core::LauncherCore`] and renders
+//! its view — banner, search prompt, and an app grid — so it looks and behaves
+//! like the shipped TUI, on a GPU/Skia surface. Freya keyboard events map to the
+//! abstract `LauncherAction` vocabulary via [`hyprburst::gui::key_to_action`];
+//! all selection, filtering, and launching stay in the core.
 //!
 //! Built only with the `freya-spike` feature (see `required-features` in
 //! `Cargo.toml`), so the default build and shipped binary never pull Freya.
 //!
 //! Modes:
-//! - default — open the window and hold it, for visual windowrules inspection
-//!   (float/fullscreen/opacity/blur). The first-frame metrics are printed once
-//!   the window paints; close the window to exit.
-//! - `--measure` — same, but the process exits right after the first frame is
-//!   captured, so the harness can read cold-start and peak RSS without a human
-//!   in the loop.
+//! - default — open the window and run the launcher interactively (type to
+//!   filter, arrows to navigate the grid, Enter launches via the core, Esc
+//!   cancels). The first-frame metrics print once the window paints.
+//! - `--measure` — same window, but the process exits right after the first
+//!   frame is captured, for unattended cold-start / peak-RSS capture.
+//! - `--bench` — no window: run the harness headlessly and print the baseline
+//!   vs. native-GUI comparison table (cold-start, input latency, fps/jank,
+//!   footprint), then exit.
 //!
-//! Cold-start here is measured from process start to the app root's first render
-//! (the closest cheap proxy for the first painted frame); a short settle lets the
-//! GPU surface allocate before peak RSS is read.
+//! Cold-start here is measured from process start to the app root's first
+//! render; a short settle lets the GPU surface allocate before peak RSS is read.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,11 +29,14 @@ use std::time::{Duration, Instant};
 
 use freya::prelude::*;
 use hyprburst::bench;
+use hyprburst::config::Config;
+use hyprburst::gui;
+use hyprburst::launcher_core::LauncherCore;
 
 /// Wayland app-id — must match the id the shipped windowrules target.
 const APP_ID: &str = "hyprburst";
 /// Column label this variant fills in the comparison table.
-const VARIANT: &str = "freya-window-probe";
+const VARIANT: &str = "native-gui";
 
 /// Process-start reference, set once at the top of `main`.
 static START: OnceLock<Instant> = OnceLock::new();
@@ -41,7 +45,15 @@ static FIRST_FRAME_NS: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
     let _ = START.set(Instant::now());
-    let measure = std::env::args().skip(1).any(|a| a == "--measure");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Headless benchmark mode: no window, just the comparison table.
+    if args.iter().any(|a| a == "--bench") {
+        print!("{}", bench::run_bake_off_report());
+        return;
+    }
+
+    let measure = args.iter().any(|a| a == "--measure");
 
     // Report (and, in --measure, exit) once the first frame lands. Runs off the
     // UI thread so it never blocks Freya's event loop.
@@ -54,14 +66,15 @@ fn main() {
                 .with_title("hyprburst (freya spike)")
                 .with_size(640.0, 720.0)
                 .with_transparency(true)
-                .with_background((20, 20, 28)),
+                .with_background(gui::BG),
         ),
     );
 }
 
-/// App root. Stamps the first-frame timestamp on its first render (via
-/// [`use_hook`], which runs its initializer exactly once) and draws a minimal
-/// centered banner so the window is visible for windowrules inspection.
+/// App root. Holds the shared [`LauncherCore`] in reactive state, stamps the
+/// first-frame timestamp on its first render, maps global key events to
+/// [`LauncherAction`](hyprburst::launcher_core::LauncherAction)s, and renders the
+/// core's view through [`gui::render_frame`].
 fn app() -> impl IntoElement {
     use_hook(|| {
         if let Some(start) = START.get() {
@@ -71,13 +84,45 @@ fn app() -> impl IntoElement {
         }
     });
 
+    let mut core = use_state(|| {
+        let mut core = LauncherCore::new(load_config());
+        core.set_columns(gui::GRID_COLUMNS);
+        core
+    });
+
+    let content = {
+        let core = core.read();
+        let view = core.view();
+        let frame = gui::build_frame(&view, core.config());
+        gui::render_frame(&frame, core.config())
+    };
+
     rect()
         .expanded()
-        .center()
-        .background((20, 20, 28))
-        .color((235, 235, 245))
-        .font_size(28.0)
-        .child("hyprburst · freya spike")
+        .background(gui::BG)
+        .on_global_key_down(move |event: Event<KeyboardEventData>| {
+            if let Some(action) = gui::key_to_action(&event.key) {
+                core.write().apply(action);
+                // Enter launched (via the core) or Esc cancelled — the core has
+                // stopped, so tear down the window.
+                if !core.read().running() {
+                    std::process::exit(0);
+                }
+            }
+        })
+        .child(content)
+}
+
+/// Load the user's config for the live launcher, falling back to defaults so the
+/// window always opens (errors are surfaced but never fatal here).
+fn load_config() -> Config {
+    match Config::load() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("hyprburst-spike-gui: {err}; using defaults");
+            Config::default()
+        }
+    }
 }
 
 /// Wait for the first frame, then emit the probe's metrics column. With
@@ -114,8 +159,9 @@ fn spawn_reporter(exit_after: bool) {
     });
 }
 
-/// Print the probe column: the human-readable table plus the machine-readable
-/// record, reusing the exact contract the baseline TUI column uses.
+/// Print the live native-GUI column: cold-start to first frame plus footprint,
+/// reusing the exact contract the baseline TUI column uses. Input-latency / fps
+/// for this variant come from the headless `--bench` run.
 fn report(cold_start_ns: u64) {
     let footprint = bench::live_footprint_for(&["freya-spike"]);
     let metrics = [bench::probe_metrics(VARIANT, cold_start_ns, footprint)];
