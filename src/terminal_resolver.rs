@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use crate::config::{Config, TerminalConfig};
 
 /// Argv emitted in place of the `{cmd}` placeholder when resolving a terminal
-/// template. `burst tui` — not bare `burst` — because bare `burst` re-execs
+/// template. `hyprburst tui` — not bare `hyprburst` — because bare `hyprburst` re-execs
 /// into a terminal (that's what got us here), which would recurse forever.
-const BURST_CMD_ARGV: &[&str] = &["burst", "tui"];
+const HYPRBURST_CMD_ARGV: &[&str] = &["hyprburst", "tui"];
 const BUILTIN_CHAIN: &[&str] = &["alacritty", "wezterm", "ghostty", "kitty", "foot", "rio"];
 
 /// Snapshot of terminal-related environment variables.
@@ -65,7 +65,7 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-/// Resolve which terminal emulator burst should re-exec into.
+/// Resolve which terminal emulator hyprburst should re-exec into.
 ///
 /// Resolution order (first match wins):
 /// 1. `config.terminal.preferred` — explicit user choice
@@ -125,13 +125,13 @@ fn make_resolved(binary: &str, template_key: &str, terminal: &TerminalConfig) ->
         .cloned()
         .unwrap_or_else(|| vec!["-e".to_string(), "{cmd}".to_string()]);
 
-    let mut argv = Vec::with_capacity(template.len() + BURST_CMD_ARGV.len());
+    let mut argv = Vec::with_capacity(template.len() + HYPRBURST_CMD_ARGV.len());
     for arg in template {
         if arg == "{cmd}" {
-            argv.extend(BURST_CMD_ARGV.iter().map(|s| (*s).to_string()));
+            argv.extend(HYPRBURST_CMD_ARGV.iter().map(|s| (*s).to_string()));
         } else {
             let substituted = arg.replace("{class}", &terminal.class);
-            argv.push(substituted.replace("{cmd}", &BURST_CMD_ARGV.join(" ")));
+            argv.push(substituted.replace("{cmd}", &HYPRBURST_CMD_ARGV.join(" ")));
         }
     }
 
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(resolved.binary, "rio");
         assert_eq!(
             resolved.argv,
-            vec!["--title=burst", "-e", "burst", "tui"]
+            vec!["--title=hyprburst", "-e", "hyprburst", "tui"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>()
@@ -278,8 +278,8 @@ mod tests {
         assert_eq!(
             resolved.argv,
             vec![
-                "--class=burst".to_string(),
-                "burst".to_string(),
+                "--class=hyprburst".to_string(),
+                "hyprburst".to_string(),
                 "tui".to_string(),
             ]
         );
@@ -336,8 +336,8 @@ mod tests {
         assert_eq!(
             resolved.argv,
             vec![
-                "--class=burst".to_string(),
-                "burst".to_string(),
+                "--class=hyprburst".to_string(),
+                "hyprburst".to_string(),
                 "tui".to_string(),
             ]
         );
@@ -374,12 +374,18 @@ mod tests {
     #[test]
     fn each_builtin_resolves_to_correct_argv() {
         let cases: &[(&str, &[&str])] = &[
-            ("alacritty", &["--class=burst", "-e", "burst", "tui"]),
-            ("wezterm", &["start", "--class=burst", "--", "burst", "tui"]),
-            ("ghostty", &["--class=burst", "-e", "burst", "tui"]),
-            ("kitty", &["--class=burst", "burst", "tui"]),
-            ("foot", &["--app-id=burst", "burst", "tui"]),
-            ("rio", &["--title=burst", "-e", "burst", "tui"]),
+            (
+                "alacritty",
+                &["--class=hyprburst", "-e", "hyprburst", "tui"],
+            ),
+            (
+                "wezterm",
+                &["start", "--class=hyprburst", "--", "hyprburst", "tui"],
+            ),
+            ("ghostty", &["--class=hyprburst", "-e", "hyprburst", "tui"]),
+            ("kitty", &["--class=hyprburst", "hyprburst", "tui"]),
+            ("foot", &["--app-id=hyprburst", "hyprburst", "tui"]),
+            ("rio", &["--title=hyprburst", "-e", "hyprburst", "tui"]),
         ];
 
         for (binary, expected) in cases {
@@ -414,8 +420,8 @@ mod tests {
             resolved.argv,
             vec![
                 "--my-flag".to_string(),
-                "--class=burst".to_string(),
-                "burst".to_string(),
+                "--class=hyprburst".to_string(),
+                "hyprburst".to_string(),
                 "tui".to_string(),
             ]
         );
@@ -437,7 +443,7 @@ mod tests {
             resolved.argv,
             vec![
                 "--app-id=my-launcher".to_string(),
-                "burst".to_string(),
+                "hyprburst".to_string(),
                 "tui".to_string(),
             ]
         );
@@ -446,7 +452,7 @@ mod tests {
     #[test]
     fn user_supplied_terminal_unknown_to_table_uses_minimal_fallback() {
         // A custom terminal not in the built-in flag table and not configured
-        // gets the conservative `-e burst` form.
+        // gets the conservative `-e hyprburst` form.
         let cfg = cfg_with_terminal(terminal_with(&["mystery-term"]));
         let env = Env::default();
         let probe = FakeProbe::new().with("mystery-term");
@@ -455,14 +461,14 @@ mod tests {
         assert_eq!(resolved.binary, "mystery-term");
         assert_eq!(
             resolved.argv,
-            vec!["-e".to_string(), "burst".to_string(), "tui".to_string()]
+            vec!["-e".to_string(), "hyprburst".to_string(), "tui".to_string()]
         );
     }
 
     #[test]
-    fn cmd_placeholder_expands_to_burst_tui_to_avoid_relaunch_recursion() {
-        // Bare `burst` re-execs into a terminal, so the terminal must run
-        // `burst tui` (the inline TUI subcommand), not bare `burst` — otherwise
+    fn cmd_placeholder_expands_to_hyprburst_tui_to_avoid_relaunch_recursion() {
+        // Bare `hyprburst` re-execs into a terminal, so the terminal must run
+        // `hyprburst tui` (the inline TUI subcommand), not bare `hyprburst` — otherwise
         // the spawned terminal loops back into run_launch().
         for name in ["alacritty", "wezterm", "ghostty", "kitty", "foot", "rio"] {
             let cfg = cfg_with_terminal(terminal_with(&[name]));
@@ -479,8 +485,8 @@ mod tests {
                 .collect();
             assert_eq!(
                 tail,
-                vec!["tui", "burst"],
-                "{} template must end with `burst tui`, got {:?}",
+                vec!["tui", "hyprburst"],
+                "{} template must end with `hyprburst tui`, got {:?}",
                 name,
                 resolved.argv,
             );

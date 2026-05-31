@@ -1,10 +1,10 @@
 # Contributing
 
-Thanks for considering a contribution to Burst.
+Thanks for considering a contribution to Hyprburst.
 
 ## Scope
 
-Burst is maintained for a focused Arch Linux and Hyprland workflow. Changes should preserve fast startup, predictable terminal behavior, and a small configuration surface.
+Hyprburst is maintained for a focused Arch Linux and Hyprland workflow. Changes should preserve fast startup, predictable terminal behavior, and a small configuration surface.
 
 ## Before Opening A Change
 

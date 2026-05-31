@@ -1,4 +1,4 @@
-# Burst config — copy to ~/.config/burst/config.toml (or $XDG_CONFIG_HOME/burst/config.toml)
+# Hyprburst config — copy to ~/.config/hyprburst/config.toml (or $XDG_CONFIG_HOME/hyprburst/config.toml)
 # Every field is optional; omitted keys fall back to the built-in defaults.
 # Unknown keys are rejected so typos surface loudly instead of being silently ignored.
 
@@ -21,7 +21,7 @@
 # selected = "#f1fa8c"
 # empty    = "#6272a4"
 
-# Terminal emulator burst should re-exec into when launched headlessly
+# Terminal emulator hyprburst should re-exec into when launched headlessly
 # (e.g. via Hyprland bind). All keys are optional.
 #
 # Resolution order (first match on PATH wins):
@@ -35,13 +35,13 @@
 # preferred = ["rio", "ghostty"]
 
 # Window class / app-id passed to the terminal so Hyprland windowrules can
-# match (e.g. `windowrule = float, class:^(burst)$`). Defaults to "burst".
-# class = "burst"
+# match (e.g. `windowrule = float, class:^(hyprburst)$`). Defaults to "hyprburst".
+# class = "hyprburst"
 
 # Per-terminal argv templates. Override a built-in entry or add a new one for
-# a terminal burst doesn't know about. `{class}` and `{cmd}` are substituted
-# at launch time. The template MUST contain `{cmd}` (the burst binary) — if it
-# doesn't, burst prints a warning to stderr and falls back to the built-in
+# a terminal hyprburst doesn't know about. `{class}` and `{cmd}` are substituted
+# at launch time. The template MUST contain `{cmd}` (the hyprburst binary) — if it
+# doesn't, hyprburst prints a warning to stderr and falls back to the built-in
 # default.
 #
 # Built-in defaults (override only if your terminal needs different flags):
@@ -90,11 +90,12 @@
 # Multi-line ASCII banner shown above the prompt. Use a TOML multi-line string
 # ("""...""") to preserve newlines. Set to "" to hide the banner.
 # banner = """
-#  _                    _
-# | |__  _   _ _ __ ___| |_
-# | '_ \| | | | '__/ __| __|
-# | |_) | |_| | |  \__ \ |_
-# |_.__/ \__,_|_|  |___/\__|
+#  _                      _                    _
+# | |__  _   _ _ __  _ __| |__  _   _ _ __ ___| |_
+# | '_ \| | | | '_ \| '__| '_ \| | | | '__/ __| __|
+# | | | | |_| | |_) | |  | |_) | |_| | |  \__ \ |_
+# |_| |_|\__, | .__/|_|  |_.__/ \__,_|_|  |___/\__|
+#        |___/|_|
 # """
 
 # String printed before the search cursor.

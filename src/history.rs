@@ -144,14 +144,14 @@ fn now_unix() -> i64 {
 
 fn default_db_path() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join("burst").join("history.db");
+        return PathBuf::from(xdg).join("hyprburst").join("history.db");
     }
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home)
-            .join(".local/share/burst")
+            .join(".local/share/hyprburst")
             .join("history.db");
     }
-    PathBuf::from("burst_history.db")
+    PathBuf::from("hyprburst_history.db")
 }
 
 #[cfg(test)]
@@ -374,7 +374,7 @@ mod tests {
 
     fn tempdir() -> PathBuf {
         let base = std::env::temp_dir().join(format!(
-            "burst-history-test-{}-{}",
+            "hyprburst-history-test-{}-{}",
             std::process::id(),
             test_counter()
         ));

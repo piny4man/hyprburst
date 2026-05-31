@@ -6,11 +6,12 @@ use ratatui::style::Color;
 use serde::Deserialize;
 
 const DEFAULT_BANNER: &str = "\
- _                    _
-| |__  _   _ _ __ ___| |_
-| '_ \\| | | | '__/ __| __|
-| |_) | |_| | |  \\__ \\ |_
-|_.__/ \\__,_|_|  |___/\\__|";
+ _                      _                    _
+| |__  _   _ _ __  _ __| |__  _   _ _ __ ___| |_
+| '_ \\| | | | '_ \\| '__| '_ \\| | | | '__/ __| __|
+| | | | |_| | |_) | |  | |_) | |_| | |  \\__ \\ |_
+|_| |_|\\__, | .__/|_|  |_.__/ \\__,_|_|  |___/\\__|
+       |___/|_|";
 
 const DEFAULT_PROMPT: &str = "> ";
 const DEFAULT_PAGE_SIZE: usize = 10;
@@ -103,7 +104,7 @@ impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
             preferred: Vec::new(),
-            class: "burst".to_string(),
+            class: "hyprburst".to_string(),
             flags: builtin_flags(),
         }
     }
@@ -176,7 +177,7 @@ impl Config {
             Ok(contents) => {
                 let (cfg, warnings) = Self::from_toml_str_validating(&contents)?;
                 for warning in warnings {
-                    eprintln!("burst config warning: {}", warning);
+                    eprintln!("hyprburst config warning: {}", warning);
                 }
                 Ok(cfg)
             }
@@ -203,14 +204,14 @@ pub fn default_path() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
         && !xdg.is_empty()
     {
-        return PathBuf::from(xdg).join("burst").join("config.toml");
+        return PathBuf::from(xdg).join("hyprburst").join("config.toml");
     }
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home)
-            .join(".config/burst")
+            .join(".config/hyprburst")
             .join("config.toml");
     }
-    PathBuf::from("burst.toml")
+    PathBuf::from("hyprburst.toml")
 }
 
 #[derive(Default, Deserialize)]
@@ -509,7 +510,7 @@ mod tests {
         fn new() -> Self {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
             let path = std::env::temp_dir().join(format!(
-                "burst-config-test-{}-{}",
+                "hyprburst-config-test-{}-{}",
                 std::process::id(),
                 n
             ));
@@ -694,7 +695,7 @@ sparkle = "red""#;
     fn default_terminal_has_builtin_flag_table() {
         let cfg = Config::default();
         assert!(cfg.terminal.preferred.is_empty());
-        assert_eq!(cfg.terminal.class, "burst");
+        assert_eq!(cfg.terminal.class, "hyprburst");
         for name in ["alacritty", "wezterm", "ghostty", "kitty", "foot", "rio"] {
             assert!(
                 cfg.terminal.flags.contains_key(name),
@@ -740,7 +741,7 @@ preferred = ["rio"]
 "#;
         let cfg = Config::from_toml_str(toml).unwrap();
         assert_eq!(cfg.terminal.preferred, vec!["rio"]);
-        assert_eq!(cfg.terminal.class, "burst");
+        assert_eq!(cfg.terminal.class, "hyprburst");
         // Built-in flag table is preserved when [terminal.flags] is omitted.
         assert!(cfg.terminal.flags.contains_key("alacritty"));
     }
@@ -838,7 +839,7 @@ args = ["--class={class}", "-e", "{cmd}"]
             std::env::set_var("XDG_CONFIG_HOME", "/custom/config");
         }
         let path = default_path();
-        assert_eq!(path, PathBuf::from("/custom/config/burst/config.toml"));
+        assert_eq!(path, PathBuf::from("/custom/config/hyprburst/config.toml"));
 
         unsafe {
             match original_xdg {
@@ -863,7 +864,10 @@ args = ["--class={class}", "-e", "{cmd}"]
             std::env::set_var("HOME", "/home/alice");
         }
         let path = default_path();
-        assert_eq!(path, PathBuf::from("/home/alice/.config/burst/config.toml"));
+        assert_eq!(
+            path,
+            PathBuf::from("/home/alice/.config/hyprburst/config.toml")
+        );
 
         unsafe {
             match original_xdg {

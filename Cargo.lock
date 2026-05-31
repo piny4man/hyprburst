@@ -118,18 +118,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
-name = "burst"
-version = "0.4.3"
-dependencies = [
- "crossterm",
- "ratatui",
- "rusqlite",
- "serde",
- "tachyonfx",
- "toml",
-]
-
-[[package]]
 name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -516,6 +504,18 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hyprburst"
+version = "0.4.3"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "tachyonfx",
+ "toml",
+]
 
 [[package]]
 name = "id-arena"

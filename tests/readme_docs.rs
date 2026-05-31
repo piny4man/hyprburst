@@ -1,7 +1,7 @@
 //! Golden-file tests for the public-readiness documentation in `README.md`.
 //!
 //! Phase 2 of the publish-readiness plan requires the README to be sufficient
-//! for someone discovering Burst through crates.io or AUR: a product pitch, a
+//! for someone discovering Hyprburst through crates.io or AUR: a product pitch, a
 //! demo/screenshots placeholder, install methods (from source, crates.io, AUR),
 //! a usage section explaining every command, and a troubleshooting section.
 //! These tests fail CI if any of those sections regress out of the README.
@@ -31,8 +31,8 @@ fn readme_has_install_section_with_all_methods() {
         "README should have an `## Install` section"
     );
     assert!(
-        readme.contains("cargo install burst"),
-        "README should document the `cargo install burst` method"
+        readme.contains("cargo install hyprburst"),
+        "README should document the `cargo install hyprburst` method"
     );
     assert!(
         readme.contains("cargo install --path ."),
@@ -52,8 +52,8 @@ fn readme_explains_every_command() {
         "README should have a `## Usage` section consolidating the commands"
     );
     assert!(
-        readme.contains("burst tui"),
-        "README should explain the `burst tui` command"
+        readme.contains("hyprburst tui"),
+        "README should explain the `hyprburst tui` command"
     );
     assert!(
         readme.contains("--bench-startup"),

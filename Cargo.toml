@@ -1,14 +1,15 @@
 [package]
-name = "burst"
+name = "hyprburst"
 version = "0.4.3"
 edition = "2024"
 description = "Fast fullscreen terminal application launcher for Arch Linux and Hyprland"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/piny4man/burst"
+repository = "https://github.com/piny4man/hyprburst"
 readme = "README.md"
 keywords = ["launcher", "hyprland", "tui", "arch-linux", "desktop"]
 categories = ["command-line-utilities", "gui"]
 include = [
+    "CHANGELOG.md",
     "Cargo.lock",
     "Cargo.toml",
     "CODE_OF_CONDUCT.md",
