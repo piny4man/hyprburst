@@ -7,7 +7,6 @@
 //! `KeyCode` types appear in this module's public API.
 
 use std::collections::HashMap;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
@@ -281,9 +280,10 @@ impl LauncherCore {
             let (idx, _) = self.filtered[self.selected_index];
             let app = &self.apps[idx];
             if !app.exec.is_empty() {
-                let _ = Command::new("hyprctl")
-                    .args(["dispatch", "exec", "--", &app.exec])
-                    .spawn();
+                // Dispatch in whichever `hyprctl` form the running Hyprland
+                // accepts — bare-word (pre-0.55) or Lua `hl.dsp` (0.55+), which
+                // otherwise silently no-ops the launch. See [`crate::hyprland`].
+                crate::hyprland::dispatch_exec(&app.exec);
             }
             if let Some(history) = &self.history {
                 let _ = history.record_launch(&app.id, &app.name);

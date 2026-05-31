@@ -128,9 +128,9 @@ fn main() {
 /// is how a launch dismisses the window while the process stays alive for the
 /// next warm toggle. Best-effort: a spawn failure (no Hyprland) is ignored.
 fn hide_special_workspace() {
-    let _ = std::process::Command::new("hyprctl")
-        .args(["dispatch", "togglespecialworkspace", APP_ID])
-        .spawn();
+    // Use whichever `hyprctl` dispatch form the running Hyprland accepts (the
+    // 0.55+ Lua form otherwise silently no-ops). See `hyprburst::hyprland`.
+    hyprburst::hyprland::dispatch_toggle_special(APP_ID);
 }
 
 /// Listen for `SIGUSR1` on a dedicated thread and, on each one, arm a

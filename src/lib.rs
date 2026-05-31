@@ -8,6 +8,7 @@ pub mod gui;
 #[cfg(feature = "freya-spike")]
 pub mod gui_icons;
 pub mod history;
+pub mod hyprland;
 pub mod icon;
 pub mod input;
 pub mod launcher;
