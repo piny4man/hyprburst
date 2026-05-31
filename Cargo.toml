@@ -32,6 +32,25 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tachyonfx = "0.25"
 
+# Freya bake-off spike (experiment branch only). Gated behind the optional
+# `freya-spike` feature so the default build, shipped binary, CI, and crates.io
+# packaging stay byte-for-byte unaffected — Freya and its Skia/PTY stack are
+# compiled only when the feature is explicitly enabled. The `terminal` feature
+# pulls Freya's PTY-backed terminal component (`freya-terminal`), which the
+# Phase 5 embedded-terminal POC hosts; `winit` (default) backs the window.
+freya = { version = "0.4.0-rc.21", optional = true, features = ["terminal"] }
+
+[features]
+# Off by default. Enables the Freya POC binaries and their dependency stack.
+freya-spike = ["dep:freya"]
+
+# Thin Phase 3 viability probe — grows into the real native-GUI POC in Phase 4.
+# Gated so it is never built (and Freya is never pulled) without the feature.
+[[bin]]
+name = "hyprburst-spike-gui"
+path = "src/bin/hyprburst-spike-gui.rs"
+required-features = ["freya-spike"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"

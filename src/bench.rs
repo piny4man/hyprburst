@@ -217,12 +217,38 @@ pub fn summarize(raw: &RawTimings, variant: &str, footprint: Footprint) -> Metri
     }
 }
 
-/// Probe live footprint of the running process.
+/// Build a [`Metrics`] column for a bare-window viability probe (Phase 3).
+///
+/// Only cold-start (process start → first painted frame) and footprint are
+/// measured here: the bare window runs no [`LauncherCore`] input loop, so input
+/// latency, fps, and jank stay zero — the full POC fills them in Phase 4 — and
+/// warm-toggle is `N/A`, as for the baseline TUI.
+pub fn probe_metrics(variant: &str, cold_start_ns: u64, footprint: Footprint) -> Metrics {
+    Metrics {
+        variant: variant.to_string(),
+        cold_start_ns,
+        warm_toggle_ns: None,
+        input_latency_ns: 0,
+        fps: 0.0,
+        jank_count: 0,
+        footprint,
+    }
+}
+
+/// Probe live footprint of the running process (default-feature dep count).
 pub fn live_footprint() -> Footprint {
+    live_footprint_for(&[])
+}
+
+/// Probe live footprint, attributing the dep count to the build selected by
+/// the given extra cargo `features`. The Freya POCs pass `["freya-spike"]` so
+/// their column reflects the Freya/Skia maintenance surface rather than the
+/// Freya-free default build.
+pub fn live_footprint_for(features: &[&str]) -> Footprint {
     Footprint {
         peak_rss_kb: peak_rss_kb(),
         binary_size_bytes: binary_size_bytes(),
-        dep_count: dep_count(),
+        dep_count: dep_count_for(features),
     }
 }
 
@@ -246,16 +272,64 @@ fn binary_size_bytes() -> Option<u64> {
     std::fs::metadata(exe).ok().map(|m| m.len())
 }
 
-fn dep_count() -> Option<u32> {
+/// Count the dependencies actually pulled into the build for the given extra
+/// cargo `features`, via `cargo tree`. This is per-variant: the default
+/// (Freya-free) build resolves far fewer crates than `freya-spike`, so each
+/// column reports its own real maintenance surface rather than the lockfile
+/// union — which includes every optional dependency regardless of variant.
+/// Falls back to the `Cargo.lock` package count when `cargo` is unavailable
+/// (e.g. a shipped binary on a machine with no toolchain).
+pub fn dep_count_for(features: &[&str]) -> Option<u32> {
+    cargo_tree(features)
+        .map(|tree| dep_count_from_tree(&tree))
+        .or_else(dep_count_from_lock)
+}
+
+/// Run `cargo tree --prefix none` for the given extra features and return its
+/// stdout. `None` if `cargo` is missing or the command fails.
+fn cargo_tree(features: &[&str]) -> Option<String> {
+    let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(["tree", "--prefix", "none", "--manifest-path", manifest]);
+    if !features.is_empty() {
+        cmd.arg("--features").arg(features.join(","));
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()
+}
+
+/// Read the `Cargo.lock` union package count — fallback for [`dep_count_for`]
+/// when `cargo tree` can't run.
+fn dep_count_from_lock() -> Option<u32> {
     let lock = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock");
     std::fs::read_to_string(lock)
         .ok()
         .map(|text| dep_count_from_str(&text))
 }
 
-/// Count `[[package]]` entries in a `Cargo.lock`.
+/// Count `[[package]]` entries in a `Cargo.lock` (the union across every
+/// optional feature).
 pub fn dep_count_from_str(lock: &str) -> u32 {
     lock.lines().filter(|l| l.trim() == "[[package]]").count() as u32
+}
+
+/// Count unique `name vVERSION` packages in `cargo tree --prefix none` output,
+/// de-duplicating repeated subtrees (`(*)`) and ignoring trailing annotations
+/// such as `(proc-macro)` or the root crate's source path.
+pub fn dep_count_from_tree(tree: &str) -> u32 {
+    let mut seen = std::collections::BTreeSet::new();
+    for line in tree.lines() {
+        let mut tokens = line.split_whitespace();
+        if let (Some(name), Some(version)) = (tokens.next(), tokens.next())
+            && version.starts_with('v')
+        {
+            seen.insert((name.to_string(), version.to_string()));
+        }
+    }
+    seen.len() as u32
 }
 
 /// Run the baseline ratatui TUI variant against the contract and produce its
@@ -539,6 +613,43 @@ name = \"b\"
 version = \"2.0\"
 ";
         assert_eq!(dep_count_from_str(lock), 2);
+    }
+
+    #[test]
+    fn dep_count_from_tree_counts_unique_packages() {
+        // Mirrors `cargo tree --prefix none`: a root with a source path,
+        // `(proc-macro)` and `(*)` annotations, a duplicate subtree, and a
+        // blank line — all of which must collapse to the unique package set.
+        let tree = "\
+hyprburst v0.4.3 (/home/u/hyprburst)
+crossterm v0.29.0
+derive_more-impl v2.1.1 (proc-macro)
+proc-macro2 v1.0.106
+
+crossterm v0.29.0 (*)
+ratatui v0.30.0
+";
+        // hyprburst, crossterm, derive_more-impl, proc-macro2, ratatui = 5.
+        assert_eq!(dep_count_from_tree(tree), 5);
+    }
+
+    #[test]
+    fn probe_metrics_measures_cold_start_and_footprint_only() {
+        let footprint = Footprint {
+            peak_rss_kb: Some(42_000),
+            binary_size_bytes: Some(120_000_000),
+            dep_count: Some(375),
+        };
+        let m = probe_metrics("freya-window-probe", 9_000_000, footprint);
+
+        assert_eq!(m.variant, "freya-window-probe");
+        assert_eq!(m.cold_start_ns, 9_000_000);
+        assert_eq!(m.footprint, footprint);
+        // Bare window: no input loop, so these stay unmeasured.
+        assert_eq!(m.input_latency_ns, 0);
+        assert!(m.fps.abs() < 1e-9);
+        assert_eq!(m.jank_count, 0);
+        assert_eq!(m.warm_toggle_ns, None);
     }
 
     #[test]
