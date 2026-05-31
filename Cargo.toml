@@ -125,6 +125,15 @@ name = "hyprburst-spike-term"
 path = "src/bin/hyprburst-spike-term.rs"
 required-features = ["freya-spike"]
 
+# Phase 7 deliverable 2: the slim gl-term host. Gated behind `glterm-spike` (which
+# `freya-spike` turns on), so `--features freya-spike` builds it alongside the
+# Freya POCs, *and* `--features glterm-spike` builds it standalone without pulling
+# Freya/Skia — the build that yields the gate-5 "without Skia" dep count.
+[[bin]]
+name = "hyprburst-spike-glterm"
+path = "src/bin/hyprburst-spike-glterm.rs"
+required-features = ["glterm-spike"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"

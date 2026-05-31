@@ -17,7 +17,7 @@ pub mod launcher;
 pub mod launcher_core;
 pub mod layout;
 pub mod search;
-#[cfg(feature = "freya-spike")]
+#[cfg(any(feature = "freya-spike", feature = "glterm-spike"))]
 pub mod spike_metrics;
 #[cfg(any(feature = "freya-spike", feature = "glterm-spike"))]
 pub mod term_host;

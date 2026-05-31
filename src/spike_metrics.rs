@@ -13,17 +13,21 @@
 //! reflects time-to-visible rather than time-to-first-render.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "freya-spike")]
 use std::time::Instant;
 
+#[cfg(feature = "freya-spike")]
 use freya_winit::plugins::{FreyaPlugin, PluginEvent, PluginHandle};
 
 /// Freya plugin that records, once, the elapsed time from a process-start
 /// reference to the first frame actually presented to the window.
+#[cfg(feature = "freya-spike")]
 pub struct FirstPaintPlugin {
     start: Instant,
     stamp: &'static AtomicU64,
 }
 
+#[cfg(feature = "freya-spike")]
 impl FirstPaintPlugin {
     /// `start` is the process-start reference; `stamp` is set (once, via CAS) to
     /// the nanoseconds elapsed at the first presented frame. `stamp` should begin
@@ -33,6 +37,7 @@ impl FirstPaintPlugin {
     }
 }
 
+#[cfg(feature = "freya-spike")]
 impl FreyaPlugin for FirstPaintPlugin {
     fn plugin_id(&self) -> &'static str {
         "hyprburst-first-paint"
@@ -128,11 +133,17 @@ impl Default for WarmToggle {
 /// present after a show-trigger was armed. Pairs with the resident binary's
 /// re-show handling, which calls [`WarmToggle::arm`] when the window is toggled
 /// back on (or on `SIGUSR1` in the unattended driver).
+///
+/// Freya-only: the gl-term host has no Freya runtime, so it stamps presents by
+/// calling [`WarmToggle::present`] directly from its winit redraw after swapping
+/// buffers, rather than through this plugin.
+#[cfg(feature = "freya-spike")]
 pub struct WarmTogglePlugin {
     start: Instant,
     warm: &'static WarmToggle,
 }
 
+#[cfg(feature = "freya-spike")]
 impl WarmTogglePlugin {
     /// `start` is the same process-start reference the cold-start plugin uses, so
     /// arm/present timestamps share one base clock.
@@ -141,6 +152,7 @@ impl WarmTogglePlugin {
     }
 }
 
+#[cfg(feature = "freya-spike")]
 impl FreyaPlugin for WarmTogglePlugin {
     fn plugin_id(&self) -> &'static str {
         "hyprburst-warm-toggle"
