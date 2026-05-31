@@ -380,7 +380,41 @@ pub fn run_native_gui() -> Metrics {
         std::hint::black_box(&frame);
     });
 
-    summarize(&raw, "native-gui", live_footprint_for(&["freya-spike"]))
+    let mut metrics = summarize(&raw, "native-gui", live_footprint_for(&["freya-spike"]));
+    // Phase 7: native-GUI is the *resident* variant, so it fills the warm-toggle
+    // row the spawn-per-launch columns leave N/A — modelled headlessly as the CPU
+    // cost of resetting a used launcher and rebuilding its first frame on re-show.
+    let warm_clock = MonotonicClock::new();
+    let mut warm_core = LauncherCore::from_apps(synthetic_apps(), config.clone());
+    warm_core.set_columns(crate::gui::columns_for(&config));
+    metrics.warm_toggle_ns = Some(measure_warm_toggle(&warm_clock, &mut warm_core, &config));
+    metrics
+}
+
+/// Measure the native-GUI variant's warm-toggle repaint cost: the CPU work to
+/// reset a *used* launcher (query typed, selection moved, then launched, which
+/// stopped the core) back to its fresh state and rebuild the first frame. This is
+/// the headless analog of hide→show→painted, minus process startup (the resident
+/// window is already realized) and GPU compositing (excluded from every column) —
+/// so it isolates exactly the per-toggle CPU work [`crate::launcher_core::LauncherCore::reset`]
+/// plus [`crate::gui::build_frame`] do on re-show. Reads `clock` exactly twice, so
+/// it's deterministic under a scripted fake clock.
+#[cfg(feature = "freya-spike")]
+pub fn measure_warm_toggle(clock: &dyn Clock, core: &mut LauncherCore, config: &Config) -> u64 {
+    // Put the launcher in a representative "used and stopped" state, so the reset
+    // has the same work to undo that a real toggle would: a filtered query, a
+    // moved selection, and a stopped core. `Cancel` (not `LaunchSelected`) stops
+    // it without dispatching `hyprctl` — the model must never spawn a process.
+    core.apply(LauncherAction::Insert('f'));
+    core.apply(LauncherAction::MoveDown);
+    core.apply(LauncherAction::Cancel);
+
+    let before = clock.now_nanos();
+    core.reset();
+    let view = core.view();
+    let frame = crate::gui::build_frame(&view, config);
+    std::hint::black_box(&frame);
+    clock.now_nanos().saturating_sub(before)
 }
 
 /// Run the native-GUI POC's *themed-icon* variant (Phase 6 measured bonus) and
@@ -864,8 +898,30 @@ ratatui v0.30.0
         assert!(m.footprint.peak_rss_kb.is_some());
         assert!(m.footprint.binary_size_bytes.is_some());
         assert!(m.footprint.dep_count.is_some());
-        // Spawn-per-launch POC: no resident window to toggle.
-        assert_eq!(m.warm_toggle_ns, None);
+        // Phase 7: the resident native-GUI variant fills the warm-toggle row.
+        assert!(
+            m.warm_toggle_ns.is_some_and(|ns| ns > 0),
+            "resident native-GUI must report a warm-toggle latency",
+        );
+    }
+
+    #[cfg(feature = "freya-spike")]
+    #[test]
+    fn measure_warm_toggle_times_reset_and_repaint_deterministically() {
+        let config = Config::default();
+        let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
+        core.set_columns(crate::gui::columns_for(&config));
+        // Two readings bracket the reset+repaint: 1_000 → 1_500.
+        let clock = FakeClock::new(vec![1_000, 1_500]);
+
+        let ns = measure_warm_toggle(&clock, &mut core, &config);
+
+        assert_eq!(ns, 500, "warm toggle is the bracketed reset+repaint span");
+        assert!(
+            core.running(),
+            "reset resumed the core for the next session"
+        );
+        assert_eq!(core.view().query, "", "reset cleared the used query");
     }
 
     #[cfg(feature = "freya-spike")]

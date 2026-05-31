@@ -137,6 +137,19 @@ impl LauncherCore {
         self.columns = columns.max(1);
     }
 
+    /// Reset to the freshly-opened state — clear the query, rebuild the filtered
+    /// list (which returns the selection to the top), and resume running if there
+    /// are apps — *without* re-discovering apps or reloading history. The resident
+    /// POC (Phase 7) calls this when the hidden window is toggled back on, so a
+    /// re-show presents a clean launcher instead of the previous query/selection.
+    /// Deliberately cheap (no discovery, no I/O), which is what keeps the
+    /// warm-toggle repaint fast.
+    pub fn reset(&mut self) {
+        self.query.clear();
+        self.rebuild_filtered();
+        self.running = !self.apps.is_empty();
+    }
+
     /// Apply an abstract action to the state machine. No-op once the launcher
     /// has stopped running.
     pub fn apply(&mut self, action: LauncherAction) {
@@ -359,6 +372,30 @@ mod tests {
             })
             .collect();
         LauncherCore::for_test(apps, Config::default())
+    }
+
+    #[test]
+    fn reset_restores_fresh_state_and_resumes_running() {
+        let mut core = core_with_apps();
+        core.apply(LauncherAction::Insert('b')); // filter the list
+        core.apply(LauncherAction::MoveDown); // move the selection
+        core.apply(LauncherAction::Cancel); // stop without spawning a process
+        assert!(!core.running());
+
+        core.reset();
+
+        assert!(core.running(), "reset resumes input handling");
+        let view = core.view();
+        assert_eq!(view.query, "", "reset clears the query");
+        assert_eq!(core.selected_index, 0, "reset returns selection to the top");
+        assert_eq!(view.entries.len(), 3, "all apps visible again after reset");
+    }
+
+    #[test]
+    fn reset_on_empty_app_set_stays_stopped() {
+        let mut core = LauncherCore::for_test(vec![], Config::default());
+        core.reset();
+        assert!(!core.running(), "no apps means nothing to run after reset");
     }
 
     #[test]

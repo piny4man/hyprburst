@@ -2119,6 +2119,7 @@ dependencies = [
  "ratatui",
  "rusqlite",
  "serde",
+ "signal-hook 0.3.18",
  "tachyonfx",
  "toml 0.8.23",
 ]

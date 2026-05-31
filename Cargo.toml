@@ -60,10 +60,22 @@ image = { version = "0.25", optional = true, default-features = false, features 
 # present (`AfterPresenting`) instead of the first component render, which fires
 # well before Skia paints and the compositor shows the window. Zero new packages.
 freya-winit = { version = "0.4.0-rc.21", optional = true }
+# Same Skia spike. `signal-hook` is already pulled transitively by the Freya
+# stack; depending on it directly (still optional, still gated) lets the Phase 7
+# resident POC arm a warm-toggle measurement on `SIGUSR1` — the unattended toggle
+# driver and a stack-agnostic manual fallback — with safe, synchronous signal
+# delivery on a dedicated thread. Zero new packages in the `Cargo.lock` union.
+signal-hook = { version = "0.3", optional = true }
 
 [features]
 # Off by default. Enables the Freya POC binaries and their dependency stack.
-freya-spike = ["dep:freya", "dep:alacritty_terminal", "dep:image", "dep:freya-winit"]
+freya-spike = [
+    "dep:freya",
+    "dep:alacritty_terminal",
+    "dep:image",
+    "dep:freya-winit",
+    "dep:signal-hook",
+]
 
 # Thin Phase 3 viability probe — grows into the real native-GUI POC in Phase 4.
 # Gated so it is never built (and Freya is never pulled) without the feature.
