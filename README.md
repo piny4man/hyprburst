@@ -87,6 +87,8 @@ cargo install hyprburst
 paru -S hyprburst   # or: yay -S hyprburst
 ```
 
+The `PKGBUILD` lives at [`packaging/aur/`](packaging/aur/) — it builds the published crate from source and installs the binary, the drop-in Hyprland config, and the example config. See its [README](packaging/aur/README.md) to build or publish it yourself.
+
 After installing, drop in the Hyprland config (see [Hyprland Setup](#hyprland-setup)) and bind a key to `hyprburst`.
 
 ## Usage

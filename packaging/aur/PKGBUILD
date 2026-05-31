@@ -1,0 +1,57 @@
+# Maintainer: piny4man <development@pinya.dev>
+
+pkgname=hyprburst
+pkgver=0.4.3
+pkgrel=1
+pkgdesc="Fast fullscreen terminal application launcher for Arch Linux and Hyprland"
+arch=('x86_64')
+url="https://github.com/piny4man/hyprburst"
+license=('GPL-3.0-or-later')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo')
+optdepends=(
+  'hyprland: window-manager integration for the full-monitor overlay'
+  'foot: terminal emulator to host the launcher TUI (any of alacritty/wezterm/ghostty/kitty/foot/rio works)'
+  'ttf-nerd-fonts-symbols: Nerd Font glyphs for entry icons (any Nerd Font works)'
+)
+options=('!lto')
+source=("$pkgname-$pkgver.crate::https://static.crates.io/crates/$pkgname/$pkgname-$pkgver.crate")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  # Only the behavioural integration tests are run here. The repo-hygiene golden
+  # tests (crates_io_publishing, release_readiness) read files that ship in the
+  # git repo but not in the crate tarball (RELEASING.md, .github/workflows), so
+  # they cannot pass from a packaged source and are not meaningful to a builder.
+  cargo test --frozen --release --test launcher_flow --test bench_startup
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm0755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+
+  # Drop-in Hyprland overlay config (source it from ~/.config/hypr/hyprland.conf).
+  install -Dm0644 "packaging/hyprburst.conf" \
+    "$pkgdir/usr/share/hyprburst/hyprburst.conf"
+  # Annotated example config for ~/.config/hyprburst/config.toml.
+  install -Dm0644 "config.example.toml" \
+    "$pkgdir/usr/share/hyprburst/config.example.toml"
+
+  install -Dm0644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm0644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

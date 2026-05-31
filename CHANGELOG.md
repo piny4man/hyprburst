@@ -27,6 +27,9 @@ application launcher for Arch Linux and Hyprland.
   time cold startup and report peak RSS.
 - Drop-in Hyprland overlay config at `packaging/hyprburst.conf` (full-monitor
   floating windowrules + a `Super+Space` bind).
+- Arch/AUR packaging under `packaging/aur/` (`PKGBUILD` + `.SRCINFO`) that builds
+  the published crate from source and installs the binary, the Hyprland config,
+  and the example config.
 - Loading polish and result-area query transitions powered by `tachyonfx`.
 - Public-readiness docs: README, RELEASING, MAINTAINERS, CONTRIBUTING, SECURITY,
   CODE_OF_CONDUCT, and this changelog.
