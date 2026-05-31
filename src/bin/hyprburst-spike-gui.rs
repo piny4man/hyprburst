@@ -66,7 +66,7 @@ fn main() {
                 .with_title("hyprburst (freya spike)")
                 .with_size(f64::from(gui::WINDOW_WIDTH), f64::from(gui::WINDOW_HEIGHT))
                 .with_transparency(true)
-                .with_background(gui::BG),
+                .with_background(gui::WINDOW_CLEAR),
         ),
     );
 }
@@ -100,7 +100,7 @@ fn app() -> impl IntoElement {
 
     rect()
         .expanded()
-        .background(gui::BG)
+        .background(gui::WINDOW_CLEAR)
         .on_global_key_down(move |event: Event<KeyboardEventData>| {
             if let Some(action) = gui::key_to_action(&event.key) {
                 core.write().apply(action);

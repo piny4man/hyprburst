@@ -37,21 +37,48 @@ pub const BANNER_FONT_SIZE: f32 = 14.0;
 pub const PROMPT_FONT_SIZE: f32 = 22.0;
 pub const ENTRY_FONT_SIZE: f32 = 18.0;
 
-/// Generic monospace family. fontconfig resolves this to the user's configured
-/// monospace face (a Nerd Font on most Hyprland setups), so the banner ASCII art
-/// and grid columns align cell-for-cell like the terminal — the single biggest
-/// visual-parity fix over Freya's proportional default face.
+/// Generic monospace family, used when no explicit override is set. fontconfig
+/// resolves it to the system's configured monospace face (a Nerd Font on most
+/// Hyprland setups), so the banner ASCII art and grid columns align cell-for-cell
+/// like the terminal — the single biggest visual-parity fix over Freya's
+/// proportional default face. See [`font_family`] for the override.
 pub const MONOSPACE_FAMILY: &str = "monospace";
+
+/// Environment variable that pins the GUI font family to an exact face (e.g. the
+/// user's terminal Nerd Font), for closer parity than the generic `monospace`
+/// alias can guarantee.
+pub const FONT_ENV: &str = "HYPRBURST_GUI_FONT";
 
 /// Approximate advance width of one monospace glyph as a fraction of its font
 /// size; used only to estimate how many grid columns fit the window.
 const MONO_CHAR_WIDTH_RATIO: f32 = 0.6;
 
-/// Window background; matches the `WindowConfig` background so transparency/blur
-/// windowrules blend cleanly.
-pub const BG: (u8, u8, u8) = (20, 20, 28);
+/// Translucent panel fill painted behind everything. The alpha (< 1) is what
+/// lets a Hyprland `blur` windowrule for app-id `hyprburst` show through — an
+/// opaque fill would defeat `with_transparency(true)` and leave no pixels to
+/// blur. Tuned to stay readable while clearly translucent.
+pub const SURFACE: (u8, u8, u8, f32) = (20, 20, 28, 0.82);
+/// Fully transparent window clear and event-surface fill, so the only
+/// translucency in play is [`SURFACE`]'s — a translucent clear *and* a
+/// translucent panel would stack and wash out the blur.
+pub const WINDOW_CLEAR: (u8, u8, u8, u8) = (0, 0, 0, 0);
 /// Default foreground text color for unselected entries.
 pub const FG: (u8, u8, u8) = (220, 220, 230);
+
+/// Resolve the font family for the GUI: the [`FONT_ENV`] override when set to a
+/// non-blank value, otherwise the generic [`MONOSPACE_FAMILY`] alias.
+pub fn font_family() -> std::borrow::Cow<'static, str> {
+    resolve_font_family(std::env::var(FONT_ENV).ok().as_deref())
+}
+
+/// Pure core of [`font_family`], split out so the override logic is testable
+/// without touching the process environment.
+fn resolve_font_family(override_family: Option<&str>) -> std::borrow::Cow<'static, str> {
+    match override_family {
+        Some(f) if !f.trim().is_empty() => std::borrow::Cow::Owned(f.to_string()),
+        _ => std::borrow::Cow::Borrowed(MONOSPACE_FAMILY),
+    }
+}
 
 /// Column count for the GUI window, mirroring the TUI [`layout`](crate::layout)
 /// rule: list mode is always a single column; grid mode divides the window's
@@ -285,9 +312,9 @@ pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
         .direction(Direction::vertical())
         .padding(Gaps::new_all(ROOT_PADDING))
         .spacing(12.0)
-        .background(BG)
+        .background(SURFACE)
         .color(FG)
-        .font_family(MONOSPACE_FAMILY)
+        .font_family(font_family())
         .children(children)
         .into_element()
 }
@@ -511,6 +538,16 @@ mod tests {
         let view = core.view();
         let frame = build_frame(&view, core.config());
         assert_eq!(frame.cursor, None);
+    }
+
+    #[test]
+    fn resolve_font_family_prefers_non_blank_override() {
+        assert_eq!(resolve_font_family(None).as_ref(), MONOSPACE_FAMILY);
+        assert_eq!(resolve_font_family(Some("   ")).as_ref(), MONOSPACE_FAMILY);
+        assert_eq!(
+            resolve_font_family(Some("JetBrainsMono Nerd Font")).as_ref(),
+            "JetBrainsMono Nerd Font"
+        );
     }
 
     #[test]
