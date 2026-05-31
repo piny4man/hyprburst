@@ -3,16 +3,16 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::Instant;
 
-use burst::app::App;
-use burst::config::Config;
-use burst::terminal_resolver::{self, Env, ResolveError, SystemPathProbe};
-use burst::{input, terminal};
+use hyprburst::app::App;
+use hyprburst::config::Config;
+use hyprburst::terminal_resolver::{self, Env, ResolveError, SystemPathProbe};
+use hyprburst::{input, terminal};
 
 const HELP: &str = "\
-burst — a fast application launcher
+hyprburst — a fast application launcher
 
 USAGE:
-    burst [COMMAND]
+    hyprburst [COMMAND]
 
 COMMANDS:
     tui       Run the TUI inline in the current terminal (no re-exec)
@@ -22,15 +22,15 @@ FLAGS:
     -h, --help           Print this help message
     --bench-startup      Measure config-load + App::new latency and exit
 
-With no command, burst re-execs into the user's preferred terminal emulator.
+With no command, hyprburst re-execs into the user's preferred terminal emulator.
 ";
 
 fn load_config_for_tui() -> Config {
     match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("burst: {}", err);
-            eprintln!("burst: falling back to default configuration");
+            eprintln!("hyprburst: {}", err);
+            eprintln!("hyprburst: falling back to default configuration");
             Config::default()
         }
     }
@@ -41,9 +41,12 @@ fn bench_startup() -> io::Result<()> {
     let config = load_config_for_tui();
     let _app = App::new(config);
     let elapsed = start.elapsed();
-    println!("burst startup: {:.2}ms", elapsed.as_secs_f64() * 1_000.0);
+    println!(
+        "hyprburst startup: {:.2}ms",
+        elapsed.as_secs_f64() * 1_000.0
+    );
     if let Some(kb) = read_self_rss_kb() {
-        println!("burst peak RSS: {} KB", kb);
+        println!("hyprburst peak RSS: {} KB", kb);
     }
     Ok(())
 }
@@ -92,7 +95,7 @@ fn run_tui() -> io::Result<()> {
     terminal::restore()
 }
 
-/// Re-exec burst inside the user's preferred terminal emulator.
+/// Re-exec hyprburst inside the user's preferred terminal emulator.
 ///
 /// Loads config, snapshots the environment, resolves the terminal, then
 /// `execvp`s into `<binary> <argv...>`. Only returns on error — on success
@@ -101,7 +104,7 @@ fn run_launch() -> ! {
     let config = match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
-            eprintln!("burst: config parse failed: {}", err);
+            eprintln!("hyprburst: config parse failed: {}", err);
             std::process::exit(1);
         }
     };
@@ -110,14 +113,14 @@ fn run_launch() -> ! {
     let resolved = match terminal_resolver::resolve(&config, &env, &SystemPathProbe) {
         Ok(r) => r,
         Err(err @ ResolveError::NoTerminalFound) => {
-            eprintln!("burst: {}", err);
+            eprintln!("hyprburst: {}", err);
             std::process::exit(1);
         }
     };
 
     let err = Command::new(&resolved.binary).args(&resolved.argv).exec();
     eprintln!(
-        "burst: failed to exec {} {}: {}",
+        "hyprburst: failed to exec {} {}: {}",
         resolved.binary,
         resolved.argv.join(" "),
         err
@@ -140,7 +143,7 @@ fn main() -> io::Result<()> {
             Ok(())
         }
         Some(other) => {
-            eprintln!("burst: unknown command '{}'\n", other);
+            eprintln!("hyprburst: unknown command '{}'\n", other);
             eprint!("{}", HELP);
             std::process::exit(2);
         }

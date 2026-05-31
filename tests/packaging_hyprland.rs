@@ -1,14 +1,14 @@
-//! Golden-file test for `packaging/hyprland-burst.conf`.
+//! Golden-file test for `packaging/hyprburst.conf`.
 //!
 //! Fails CI if the shipped Hyprland config drifts from the documentation —
-//! every windowrule promised in the README, the `burst` bind, and the
+//! every windowrule promised in the README, the `hyprburst` bind, and the
 //! commented `env = TERMINAL,rio` example must all be present. It also checks
 //! that README setup notes document the known Hyprland/Waybar overlay details.
 
 use std::path::PathBuf;
 
 fn load_conf() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging/hyprland-burst.conf");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging/hyprburst.conf");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e))
 }
@@ -23,19 +23,19 @@ fn load_readme() -> String {
 fn contains_all_documented_windowrules() {
     let conf = load_conf();
     let expected_rules = [
-        "windowrule = match:class ^(burst)$, float on",
-        "windowrule = match:class ^(burst)$, size (monitor_w) (monitor_h)",
-        "windowrule = match:class ^(burst)$, move 0 0",
-        "windowrule = match:class ^(burst)$, opacity 0.9 0.8",
-        "windowrule = match:class ^(burst)$, border_size 0",
-        "windowrule = match:class ^(burst)$, no_shadow on",
-        "windowrule = match:class ^(burst)$, stay_focused on",
-        "windowrule = match:class ^(burst)$, dim_around on",
+        "windowrule = match:class ^(hyprburst)$, float on",
+        "windowrule = match:class ^(hyprburst)$, size (monitor_w) (monitor_h)",
+        "windowrule = match:class ^(hyprburst)$, move 0 0",
+        "windowrule = match:class ^(hyprburst)$, opacity 0.9 0.8",
+        "windowrule = match:class ^(hyprburst)$, border_size 0",
+        "windowrule = match:class ^(hyprburst)$, no_shadow on",
+        "windowrule = match:class ^(hyprburst)$, stay_focused on",
+        "windowrule = match:class ^(hyprburst)$, dim_around on",
     ];
     for rule in expected_rules {
         assert!(
             conf.contains(rule),
-            "hyprland-burst.conf missing windowrule: {rule:?}"
+            "hyprburst.conf missing windowrule: {rule:?}"
         );
     }
 }
@@ -45,11 +45,11 @@ fn does_not_use_percent_size_or_center_for_overlay() {
     let conf = load_conf();
     assert!(
         !conf.contains("size 100% 100%"),
-        "hyprland-burst.conf still uses percentage sizing; use monitor expressions instead"
+        "hyprburst.conf still uses percentage sizing; use monitor expressions instead"
     );
     assert!(
-        !conf.contains("windowrule = match:class ^(burst)$, center on"),
-        "hyprland-burst.conf still centers burst; move it to 0 0 after monitor-sized resize"
+        !conf.contains("windowrule = match:class ^(hyprburst)$, center on"),
+        "hyprburst.conf still centers hyprburst; move it to 0 0 after monitor-sized resize"
     );
 }
 
@@ -66,7 +66,7 @@ fn readme_documents_full_monitor_overlay_rules() {
     );
     assert!(
         readme.contains("full-monitor floating overlay"),
-        "README should explain that burst is fake-fullscreen, not real fullscreen"
+        "README should explain that hyprburst is fake-fullscreen, not real fullscreen"
     );
 }
 
@@ -75,7 +75,7 @@ fn readme_documents_waybar_layer_workaround() {
     let readme = load_readme();
     assert!(
         readme.contains("\"layer\": \"bottom\""),
-        "README should document setting Waybar to the bottom layer when it covers burst"
+        "README should document setting Waybar to the bottom layer when it covers hyprburst"
     );
     assert!(
         readme.contains("Waybar is a layer-shell surface"),
@@ -84,21 +84,21 @@ fn readme_documents_waybar_layer_workaround() {
 }
 
 #[test]
-fn contains_burst_bind() {
+fn contains_hyprburst_bind() {
     let conf = load_conf();
     assert!(
         conf.lines()
-            .any(|l| l.trim() == "bind = SUPER, Space, exec, burst"),
-        "hyprland-burst.conf missing `bind = SUPER, Space, exec, burst` — the Hyprland bind"
+            .any(|l| l.trim() == "bind = SUPER, Space, exec, hyprburst"),
+        "hyprburst.conf missing `bind = SUPER, Space, exec, hyprburst` — the Hyprland bind"
     );
 }
 
 #[test]
-fn does_not_reference_removed_burst_launch_wrapper() {
+fn does_not_reference_removed_hyprburst_launch_wrapper() {
     let conf = load_conf();
     assert!(
-        !conf.contains("burst-launch"),
-        "hyprland-burst.conf still references the removed `burst-launch` shell wrapper"
+        !conf.contains("hyprburst-launch"),
+        "hyprburst.conf still references the removed `hyprburst-launch` shell wrapper"
     );
 }
 
@@ -108,9 +108,9 @@ fn does_not_bind_to_removed_launch_subcommand() {
     assert!(
         !conf.lines().any(|l| {
             let t = l.trim_start();
-            !t.starts_with('#') && t.contains("burst launch")
+            !t.starts_with('#') && t.contains("hyprburst launch")
         }),
-        "hyprland-burst.conf still invokes the removed `burst launch` subcommand — use bare `burst`"
+        "hyprburst.conf still invokes the removed `hyprburst launch` subcommand — use bare `hyprburst`"
     );
 }
 
@@ -120,6 +120,6 @@ fn contains_commented_terminal_env_example() {
     assert!(
         conf.lines()
             .any(|line| line.trim_start().starts_with('#') && line.contains("env = TERMINAL,rio")),
-        "hyprland-burst.conf missing commented `env = TERMINAL,rio` example"
+        "hyprburst.conf missing commented `env = TERMINAL,rio` example"
     );
 }

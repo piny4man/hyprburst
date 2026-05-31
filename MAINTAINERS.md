@@ -1,17 +1,17 @@
 # Maintainer Policy
 
-Burst is open source, but official project maintenance is controlled by the project owner.
+Hyprburst is open source, but official project maintenance is controlled by the project owner.
 
 ## Official Releases
 
-Only the owner of `github.com/piny4man/burst` controls official Burst releases, including:
+Only the owner of `github.com/piny4man/hyprburst` controls official Hyprburst releases, including:
 
 - GitHub repository administration and merge rights.
 - crates.io package ownership and publication.
 - AUR package ownership and publication.
 - Release tags, release notes, and supported release artifacts.
 
-Forks and downstream packages are allowed under the project license, but they are not official Burst releases unless the project owner explicitly designates them as such.
+Forks and downstream packages are allowed under the project license, but they are not official Hyprburst releases unless the project owner explicitly designates them as such.
 
 ## Contributions
 

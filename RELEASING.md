@@ -1,6 +1,6 @@
-# Releasing Burst
+# Releasing Hyprburst
 
-Official releases of Burst are cut by the project owner (see
+Official releases of Hyprburst are cut by the project owner (see
 [`MAINTAINERS.md`](MAINTAINERS.md)). This document is the canonical, repeatable
 checklist for publishing a release across crates.io, GitHub, and the AUR.
 
@@ -17,7 +17,7 @@ published. Do not skip steps, and do not `--no-verify`.
 
 ## 1. Decide the version bump
 
-Burst follows semantic versioning. Pick the bump from the changes since the last
+Hyprburst follows semantic versioning. Pick the bump from the changes since the last
 release:
 
 | Change | Bump |
@@ -65,7 +65,7 @@ Create an annotated tag that matches the `Cargo.toml` version exactly (the
 release-readiness workflow validates `vX.Y.Z` against the crate version):
 
 ```sh
-git tag -a vX.Y.Z -m "Burst vX.Y.Z"
+git tag -a vX.Y.Z -m "Hyprburst vX.Y.Z"
 git push origin main
 git push origin vX.Y.Z
 ```
@@ -91,7 +91,7 @@ Create a GitHub release for the `vX.Y.Z` tag, using the changelog section as the
 body:
 
 ```sh
-gh release create vX.Y.Z --title "Burst vX.Y.Z" --notes-file <(sed -n '/## vX.Y.Z/,/## v/p' CHANGELOG.md)
+gh release create vX.Y.Z --title "Hyprburst vX.Y.Z" --notes-file <(sed -n '/## vX.Y.Z/,/## v/p' CHANGELOG.md)
 ```
 
 Attach prebuilt binaries here later if the project starts shipping them.
@@ -108,12 +108,12 @@ Update the AUR package (see Phase 5 packaging plan) to the new version:
 
 ## 8. Verify the published artifacts
 
-- `cargo install burst` installs the new version from crates.io.
+- `cargo install hyprburst` installs the new version from crates.io.
 - The AUR package installs and runs.
 - README install instructions match the published artifacts.
 
 ## Cargo.lock policy
 
-Burst is a binary crate, so `Cargo.lock` is committed and shipped in the
+Hyprburst is a binary crate, so `Cargo.lock` is committed and shipped in the
 published package (it is listed in the `include` set in `Cargo.toml`). This keeps
 release builds reproducible. Never `.gitignore` `Cargo.lock`.

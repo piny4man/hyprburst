@@ -232,7 +232,7 @@ mod tests {
     use std::fs;
 
     fn make_icon_dir() -> tempdir_like::Dir {
-        tempdir_like::Dir::new("burst-icon-tests")
+        tempdir_like::Dir::new("hyprburst-icon-tests")
     }
 
     #[test]

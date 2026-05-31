@@ -2,14 +2,14 @@
 
 ## Expected Behavior
 
-Burst contributors and users are expected to keep discussion respectful, technical, and focused on improving the project.
+Hyprburst contributors and users are expected to keep discussion respectful, technical, and focused on improving the project.
 
 Examples of expected behavior include:
 
 - Giving and receiving constructive feedback.
 - Respecting maintainers' scope and release decisions.
 - Avoiding personal attacks, harassment, and discriminatory language.
-- Keeping issue and pull request discussions relevant to Burst.
+- Keeping issue and pull request discussions relevant to Hyprburst.
 
 ## Unacceptable Behavior
 
