@@ -5,6 +5,8 @@ pub mod desktop;
 pub mod effects;
 #[cfg(feature = "freya-spike")]
 pub mod gui;
+#[cfg(feature = "freya-spike")]
+pub mod gui_icons;
 pub mod history;
 pub mod icon;
 pub mod input;

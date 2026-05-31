@@ -376,11 +376,78 @@ pub fn run_native_gui() -> Metrics {
 
     let raw = measure_frames(&clock, &mut core, &input, |c| {
         let view = c.view();
-        let frame = crate::gui::build_frame(&view, &config);
+        let frame = crate::gui::build_frame(&view, &config, crate::gui::IconMode::Glyph);
         std::hint::black_box(&frame);
     });
 
     summarize(&raw, "native-gui", live_footprint_for(&["freya-spike"]))
+}
+
+/// Run the native-GUI POC's *themed-icon* variant (Phase 6 measured bonus) and
+/// produce its [`Metrics`] column.
+///
+/// Paints headlessly via [`crate::gui_icons::IconRenderModel`]: each frame builds
+/// the same glyph frame the [`run_native_gui`] column does (the shared base work)
+/// **and** decodes any newly-visible entry's icon once into a cache. So the
+/// input-latency/fps/jank figures capture the themed path's added per-frame
+/// decode on cache misses — cold start plus typing that reveals not-yet-seen apps
+/// — over the glyph baseline, while GPU upload/compositing stays excluded, as in
+/// every other column. The synthetic icons are deterministic PNGs, so the column
+/// is comparable across machines; the live process-RSS delta comes from the
+/// binary's own `--measure` report under `HYPRBURST_GUI_ICONS=themed`.
+#[cfg(feature = "freya-spike")]
+pub fn run_native_gui_icons() -> Metrics {
+    let clock = MonotonicClock::new();
+    let config = Config::default();
+    let apps = synthetic_apps();
+    // Build the icon model from a borrow first, then move `apps` into the core
+    // (`DesktopEntry` isn't `Clone`, and we don't want to change the default
+    // build to make it so).
+    let mut model = crate::gui_icons::IconRenderModel::new(config.clone(), &apps);
+    let mut core = LauncherCore::from_apps(apps, config.clone());
+    core.set_columns(crate::gui::columns_for(&config));
+    let input = scripted_input();
+
+    let raw = measure_frames(&clock, &mut core, &input, |c| model.paint(c));
+
+    summarize(
+        &raw,
+        "native-gui-icons",
+        live_footprint_for(&["freya-spike"]),
+    )
+}
+
+/// Render the Phase 6 icon delta: the native-GUI glyph column beside the
+/// themed-icon column, plus a one-line viability read (per-frame latency delta,
+/// number of distinct icons decoded, and the retained texture memory). This is
+/// the non-gating bonus measurement — it answers "are images fast enough now?"
+/// with numbers without touching the main bake-off verdict table.
+#[cfg(feature = "freya-spike")]
+pub fn run_icon_delta_report() -> String {
+    let glyph = run_native_gui();
+    let icons = run_native_gui_icons();
+
+    // Steady-state cache: decode every distinct icon once and total its memory.
+    let apps = synthetic_apps();
+    let mut model = crate::gui_icons::IconRenderModel::new(Config::default(), &apps);
+    model.decode_all();
+    let decoded = model.decoded_count();
+    let cache_kb = model.cache_bytes() as f64 / 1024.0;
+
+    let table = render_table(&[glyph.clone(), icons.clone()]);
+    let delta_ns = icons.input_latency_ns as i64 - glyph.input_latency_ns as i64;
+    let delta_ms = delta_ns as f64 / 1_000_000.0;
+    let viability = format!(
+        "icon delta: input latency {:+.3} ms vs glyph; {} icons decoded, {:.1} KB resident; jank {} (glyph {})",
+        delta_ms, decoded, cache_kb, icons.jank_count, glyph.jank_count,
+    );
+
+    format!(
+        "{}\n\n{}\n\n{}\n",
+        table,
+        viability,
+        to_json(&[glyph, icons])
+    )
 }
 
 /// Run the embedded-terminal POC variant against the contract and produce its
@@ -778,7 +845,7 @@ ratatui v0.30.0
 
         let raw = measure_frames(&clock, &mut core, &input, |c| {
             let view = c.view();
-            let frame = crate::gui::build_frame(&view, &config);
+            let frame = crate::gui::build_frame(&view, &config, crate::gui::IconMode::Glyph);
             std::hint::black_box(&frame);
         });
 
@@ -799,6 +866,32 @@ ratatui v0.30.0
         assert!(m.footprint.dep_count.is_some());
         // Spawn-per-launch POC: no resident window to toggle.
         assert_eq!(m.warm_toggle_ns, None);
+    }
+
+    #[cfg(feature = "freya-spike")]
+    #[test]
+    fn run_native_gui_icons_populates_latency_and_footprint() {
+        let m = run_native_gui_icons();
+        assert_eq!(m.variant, "native-gui-icons");
+        assert!(m.cold_start_ns > 0);
+        assert!(m.input_latency_ns > 0);
+        assert!(m.fps > 0.0);
+        assert!(m.footprint.peak_rss_kb.is_some());
+        assert!(m.footprint.binary_size_bytes.is_some());
+        assert!(m.footprint.dep_count.is_some());
+        // Spawn-per-launch POC: no resident window to toggle.
+        assert_eq!(m.warm_toggle_ns, None);
+    }
+
+    #[cfg(feature = "freya-spike")]
+    #[test]
+    fn run_icon_delta_report_shows_both_columns_and_viability() {
+        let report = run_icon_delta_report();
+        assert!(report.contains("native-gui"));
+        assert!(report.contains("native-gui-icons"));
+        assert!(report.contains("icon delta:"));
+        // 24 synthetic apps map to distinct icon names, each a 48×48 RGBA icon.
+        assert!(report.contains("icons decoded"));
     }
 
     #[cfg(feature = "freya-spike")]

@@ -45,10 +45,19 @@ freya = { version = "0.4.0-rc.21", optional = true, features = ["terminal"] }
 # the launcher's rendered VT bytes through the same emulator Freya hosts —
 # without growing the `Cargo.lock` union or touching the default build.
 alacritty_terminal = { version = "0.26", optional = true }
+# Same Skia spike. The `image` crate is already pulled transitively by Freya's
+# Skia/asset stack; depending on it directly (still optional, still gated) lets
+# the Phase 6 harness model the themed-icon path's decode cost headlessly —
+# decode real PNG bytes to RGBA, the work Freya's `ImageViewer` does on Skia —
+# without growing the `Cargo.lock` union or touching the default build. Only the
+# PNG codec is needed for the synthetic benchmark icons.
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "png",
+] }
 
 [features]
 # Off by default. Enables the Freya POC binaries and their dependency stack.
-freya-spike = ["dep:freya", "dep:alacritty_terminal"]
+freya-spike = ["dep:freya", "dep:alacritty_terminal", "dep:image"]
 
 # Thin Phase 3 viability probe — grows into the real native-GUI POC in Phase 4.
 # Gated so it is never built (and Freya is never pulled) without the feature.

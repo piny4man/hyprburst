@@ -47,6 +47,10 @@ pub enum EmptyReason {
 /// A single visible entry as the frontend should render it.
 pub struct EntryView<'a> {
     pub name: &'a str,
+    /// Raw icon-theme name from the desktop entry (e.g. `"firefox"`), so an
+    /// image-capable frontend can resolve a real themed icon file. Glyph-only
+    /// frontends ignore it and use [`icon_glyph`](Self::icon_glyph).
+    pub icon_name: &'a str,
     pub icon_glyph: &'static str,
     pub selected: bool,
 }
@@ -180,6 +184,7 @@ impl LauncherCore {
                 let app = &self.apps[idx];
                 EntryView {
                     name: &app.name,
+                    icon_name: &app.icon,
                     icon_glyph: icon_glyph_for(app),
                     selected: i == self.selected_index,
                 }

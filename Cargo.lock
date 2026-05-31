@@ -2114,6 +2114,7 @@ dependencies = [
  "alacritty_terminal",
  "crossterm",
  "freya",
+ "image",
  "ratatui",
  "rusqlite",
  "serde",

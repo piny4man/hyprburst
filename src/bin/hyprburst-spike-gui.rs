@@ -19,6 +19,11 @@
 //! - `--bench` — no window: run the harness headlessly and print the baseline
 //!   vs. native-GUI comparison table (cold-start, input latency, fps/jank,
 //!   footprint), then exit.
+//! - `--icons` — no window: print the Phase 6 glyph-vs-themed-icon delta (the
+//!   non-gating measured bonus) with a one-line viability read, then exit.
+//!
+//! The live render honors `HYPRBURST_GUI_ICONS=themed` to draw real themed icon
+//! images instead of Nerd Font glyphs (Phase 6).
 //!
 //! Cold-start here is measured from process start to the app root's first
 //! render; a short settle lets the GPU surface allocate before peak RSS is read.
@@ -50,6 +55,12 @@ fn main() {
     // Headless benchmark mode: no window, just the comparison table.
     if args.iter().any(|a| a == "--bench") {
         print!("{}", bench::run_bake_off_report());
+        return;
+    }
+
+    // Phase 6 measured bonus: glyph vs themed-icon delta, headless.
+    if args.iter().any(|a| a == "--icons") {
+        print!("{}", bench::run_icon_delta_report());
         return;
     }
 
@@ -94,7 +105,9 @@ fn app() -> impl IntoElement {
     let content = {
         let core = core.read();
         let view = core.view();
-        let frame = gui::build_frame(&view, core.config());
+        // Icon path chosen once from the environment (`HYPRBURST_GUI_ICONS`):
+        // glyph by default, themed images when opted in (Phase 6).
+        let frame = gui::build_frame(&view, core.config(), gui::icon_mode());
         gui::render_frame(&frame, core.config())
     };
 
