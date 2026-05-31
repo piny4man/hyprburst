@@ -51,6 +51,11 @@ pub fn inner_binary_path(current_exe: Option<PathBuf>) -> PathBuf {
 
 /// Build the PTY command that runs `hyprburst tui`, tagged as a 256-color
 /// terminal so the inner TUI emits its full styling.
+///
+/// Freya-only: it returns Freya's `CommandBuilder`. The gl-term host spawns its
+/// PTY through `alacritty_terminal::tty` instead (no Freya), reusing the
+/// Freya-free [`inner_binary_path`] / [`INNER_ARGS`] above.
+#[cfg(feature = "freya-spike")]
 pub fn launcher_command() -> freya::terminal::CommandBuilder {
     let program = inner_binary_path(std::env::current_exe().ok());
     let mut cmd = freya::terminal::CommandBuilder::new(program);

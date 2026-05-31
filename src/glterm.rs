@@ -25,6 +25,18 @@
 //! rasterization are excluded from the model (they happen in the live binary),
 //! exactly as GPU compositing is excluded from every other column.
 
+use alacritty_terminal::event::EventListener;
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{Config as TermConfig, Term};
+use alacritty_terminal::vte::ansi::{Color, Processor};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+
+use crate::launcher::render_core;
+use crate::launcher_core::LauncherCore;
+use crate::term_host::serialize_diff;
+
 /// Pixel size of one monospace character cell. Every layout figure derives from
 /// this and the window size; the live renderer reads it from the rasterized font
 /// metrics, tests pass it explicitly.
@@ -230,6 +242,143 @@ pub fn dirty_cells(prev: &[GridCell], cur: &[GridCell]) -> Vec<usize> {
         .collect()
 }
 
+/// Cell size the headless model lays its grid out with. The exact pixels are
+/// immaterial to the modelled CPU work (layout/diff/atlas-keying), so a plausible
+/// monospace cell is fixed for determinism; the live renderer uses real font
+/// metrics.
+const MODEL_CELL: CellMetrics = CellMetrics {
+    cell_w: 10,
+    cell_h: 20,
+};
+
+/// No-op listener: the headless model ignores the emulator's side events (bell,
+/// title, clipboard) — it only needs the VT parse to run.
+struct SilentListener;
+impl EventListener for SilentListener {}
+
+/// [`Dimensions`] for the headless grid, sized to the harness render area.
+struct GridDims {
+    rows: usize,
+    cols: usize,
+}
+
+impl Dimensions for GridDims {
+    fn total_lines(&self) -> usize {
+        self.rows
+    }
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+/// Pack an `alacritty_terminal` cell color into a `u32` for the dirty diff. RGB
+/// specs map to `0xRRGGBB`; the palette variants are tagged above the 24-bit RGB
+/// range so distinct color *kinds* never alias into a false cache hit.
+fn pack_color(color: Color) -> u32 {
+    match color {
+        Color::Spec(rgb) => ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | rgb.b as u32,
+        Color::Named(named) => 0x0100_0000 | named as u32,
+        Color::Indexed(i) => 0x0200_0000 | i as u32,
+    }
+}
+
+/// Headless model of the gl-term variant's per-frame CPU work. It hosts the same
+/// `hyprburst tui` as the embedded-terminal variant — so it shares that variant's
+/// inner-render + VT-serialize + emulator-parse cost ([`serialize_diff`] + an
+/// `alacritty_terminal` grid) — then adds the *renderer's* windowless work the
+/// Freya variant got from Skia for free: snapshot the emulator grid, diff it
+/// against the previous frame ([`dirty_cells`]), and resolve each changed cell's
+/// glyph in the [`Atlas`] (a cache hit after first sight). Glyph rasterization
+/// and GL upload/draw are excluded — they happen in the live binary — exactly as
+/// GPU compositing is excluded from every other column.
+pub struct GlTermModel {
+    area: Rect,
+    prev_buf: Buffer,
+    term: Term<SilentListener>,
+    processor: Processor,
+    atlas: Atlas,
+    prev_snapshot: Vec<GridCell>,
+}
+
+impl GlTermModel {
+    /// Build a model whose grid matches the render `area`.
+    pub fn new(area: Rect) -> Self {
+        let dims = GridDims {
+            rows: area.height as usize,
+            cols: area.width as usize,
+        };
+        let term = Term::new(TermConfig::default(), &dims, SilentListener);
+        // A 1024² atlas tiled into MODEL_CELL slots holds thousands of glyphs —
+        // far more than the launcher's character set ever needs.
+        let atlas = Atlas::new((1024, 1024), MODEL_CELL);
+        Self {
+            area,
+            prev_buf: Buffer::empty(area),
+            term,
+            processor: Processor::new(),
+            atlas,
+            prev_snapshot: Vec::new(),
+        }
+    }
+
+    /// One frame of gl-term host work: render the launcher, parse it through the
+    /// emulator (shared with embedded-term), then run the renderer's snapshot →
+    /// dirty-diff → atlas-resolve over the result.
+    pub fn paint(&mut self, core: &mut LauncherCore) {
+        // 1. Inner render + VT serialize + emulator parse — the embedded-term cost.
+        let mut cur = Buffer::empty(self.area);
+        render_core(core, self.area, &mut cur);
+        let bytes = serialize_diff(&self.prev_buf, &cur);
+        self.processor.advance(&mut self.term, &bytes);
+        self.prev_buf = cur;
+
+        // 2. Snapshot the emulator grid into renderer cells.
+        let snapshot = self.snapshot();
+
+        // 3. Dirty-region diff against the previous frame.
+        let dirty = dirty_cells(&self.prev_snapshot, &snapshot);
+
+        // 4. Resolve each changed cell's glyph in the atlas — the per-frame work
+        //    the live renderer does (rasterize + upload on a miss; reuse on a
+        //    hit). Modelled as the cache bookkeeping; raster/upload are excluded.
+        for &i in &dirty {
+            let _ = self.atlas.get_or_insert(snapshot[i].glyph_key());
+        }
+        self.prev_snapshot = snapshot;
+    }
+
+    /// Snapshot the emulator's visible grid into renderer cells.
+    fn snapshot(&self) -> Vec<GridCell> {
+        self.term
+            .grid()
+            .display_iter()
+            .map(|cell| GridCell {
+                ch: cell.c,
+                bold: cell.flags.contains(Flags::BOLD),
+                fg: pack_color(cell.fg),
+                bg: pack_color(cell.bg),
+            })
+            .collect()
+    }
+
+    /// Distinct glyphs resolved into the atlas so far — for tests asserting the
+    /// renderer keyed the parsed frame.
+    #[cfg(test)]
+    fn atlas_len(&self) -> u32 {
+        self.atlas.len()
+    }
+
+    /// Visible text currently in the emulator grid — for tests asserting the
+    /// frame parsed into the terminal.
+    #[cfg(test)]
+    fn visible_text(&self) -> String {
+        self.snapshot().iter().map(|c| c.ch).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +511,62 @@ mod tests {
         let cur = vec![GridCell::default(); 6];
         // Length change ⇒ full repaint, all six new cells dirty.
         assert_eq!(dirty_cells(&prev, &cur), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn gl_term_model_parses_launcher_and_keys_its_glyphs() {
+        use crate::config::Config;
+
+        let area = Rect::new(0, 0, 80, 40);
+        let mut core = LauncherCore::from_apps(crate::bench::synthetic_apps(), Config::default());
+        let mut model = GlTermModel::new(area);
+
+        model.paint(&mut core);
+
+        assert!(
+            model.visible_text().contains("Firefox"),
+            "the emulator grid should hold the parsed launcher frame",
+        );
+        assert!(
+            model.atlas_len() > 0,
+            "the renderer should have keyed the frame's glyphs into the atlas",
+        );
+    }
+
+    #[test]
+    fn gl_term_model_repaint_of_unchanged_frame_keys_no_new_glyphs() {
+        use crate::config::Config;
+
+        let area = Rect::new(0, 0, 80, 40);
+        let mut core = LauncherCore::from_apps(crate::bench::synthetic_apps(), Config::default());
+        let mut model = GlTermModel::new(area);
+
+        model.paint(&mut core);
+        let after_first = model.atlas_len();
+        assert!(after_first > 0);
+
+        // Repainting the same launcher state changes no cells, so the dirty diff
+        // is empty and the atlas grows by zero — the steady-state cache-hit path.
+        model.paint(&mut core);
+        assert_eq!(
+            model.atlas_len(),
+            after_first,
+            "an unchanged repaint must key no new glyphs",
+        );
+    }
+
+    #[test]
+    fn pack_color_distinguishes_color_kinds() {
+        use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+
+        let spec = pack_color(Color::Spec(Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        }));
+        assert_eq!(spec, 0x12_34_56);
+        // A palette color must not collide with the RGB that shares its low bits.
+        assert_ne!(pack_color(Color::Indexed(0x56)), spec);
+        assert_ne!(pack_color(Color::Named(NamedColor::Red)), spec);
     }
 }

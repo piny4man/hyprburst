@@ -391,30 +391,41 @@ pub fn run_native_gui() -> Metrics {
     metrics
 }
 
-/// Measure the native-GUI variant's warm-toggle repaint cost: the CPU work to
-/// reset a *used* launcher (query typed, selection moved, then launched, which
-/// stopped the core) back to its fresh state and rebuild the first frame. This is
-/// the headless analog of hide→show→painted, minus process startup (the resident
-/// window is already realized) and GPU compositing (excluded from every column) —
-/// so it isolates exactly the per-toggle CPU work [`crate::launcher_core::LauncherCore::reset`]
-/// plus [`crate::gui::build_frame`] do on re-show. Reads `clock` exactly twice, so
-/// it's deterministic under a scripted fake clock.
-#[cfg(feature = "freya-spike")]
-pub fn measure_warm_toggle(clock: &dyn Clock, core: &mut LauncherCore, config: &Config) -> u64 {
-    // Put the launcher in a representative "used and stopped" state, so the reset
-    // has the same work to undo that a real toggle would: a filtered query, a
-    // moved selection, and a stopped core. `Cancel` (not `LaunchSelected`) stops
-    // it without dispatching `hyprctl` — the model must never spawn a process.
+/// Measure a resident variant's warm-toggle repaint cost: the CPU work to reset a
+/// *used* launcher (query typed, selection moved, then stopped) back to its fresh
+/// state and repaint once. This is the headless analog of hide→show→painted, minus
+/// process startup (the resident window is already realized) and GPU compositing
+/// (excluded from every column) — so it isolates exactly the per-toggle CPU work
+/// [`crate::launcher_core::LauncherCore::reset`] plus the variant's `paint` do on
+/// re-show. The caller supplies how a frame is painted, so every resident variant
+/// shares this skeleton. `Cancel` (not `LaunchSelected`) stops the core without
+/// dispatching `hyprctl` — the model must never spawn a process. Reads `clock`
+/// exactly twice, so it's deterministic under a scripted fake clock.
+#[cfg(any(feature = "freya-spike", feature = "glterm-spike"))]
+pub fn warm_toggle_span(
+    clock: &dyn Clock,
+    core: &mut LauncherCore,
+    mut paint: impl FnMut(&mut LauncherCore),
+) -> u64 {
     core.apply(LauncherAction::Insert('f'));
     core.apply(LauncherAction::MoveDown);
     core.apply(LauncherAction::Cancel);
 
     let before = clock.now_nanos();
     core.reset();
-    let view = core.view();
-    let frame = crate::gui::build_frame(&view, config);
-    std::hint::black_box(&frame);
+    paint(core);
     clock.now_nanos().saturating_sub(before)
+}
+
+/// The native-GUI variant's warm toggle: [`warm_toggle_span`] with the GUI's pure
+/// [`crate::gui::build_frame`] as the repaint.
+#[cfg(feature = "freya-spike")]
+pub fn measure_warm_toggle(clock: &dyn Clock, core: &mut LauncherCore, config: &Config) -> u64 {
+    warm_toggle_span(clock, core, |c| {
+        let view = c.view();
+        let frame = crate::gui::build_frame(&view, config);
+        std::hint::black_box(&frame);
+    })
 }
 
 /// Run the native-GUI POC's *themed-icon* variant (Phase 6 measured bonus) and
@@ -511,13 +522,65 @@ pub fn run_embedded_term() -> Metrics {
     summarize(&raw, "embedded-term", live_footprint_for(&["freya-spike"]))
 }
 
-/// Render the head-to-head bake-off table with the baseline TUI, native-GUI POC,
-/// and embedded-terminal POC columns side by side, plus the machine-readable
-/// record. Available only with the `freya-spike` feature, which is what builds
-/// both Freya variants.
+/// Run the slim gl-term POC variant against the contract and produce its
+/// [`Metrics`] column.
+///
+/// Paints headlessly via [`crate::glterm::GlTermModel`]: the embedded-terminal
+/// parse cost (this variant hosts the same `hyprburst tui` in a PTY) **plus** the
+/// hand-written renderer's windowless work — grid snapshot, dirty-region diff, and
+/// glyph-atlas keying — that the Freya variants got from Skia for free. GPU
+/// upload/draw stays excluded, as in every column. The dep count is attributed to
+/// the `glterm-spike` feature, so the column reflects the slim winit/glutin/glow/
+/// PTY stack *without* Skia — the gate-5 contrast that is this variant's whole
+/// point. Warm-toggle is filled: gl-term is resident (the host window stays
+/// mapped; only the inner TUI re-runs per show), so it reports the re-show repaint
+/// cost like the native-GUI variant. The live window's real cold-start and peak
+/// RSS come from the `hyprburst-spike-glterm` binary's own report on first paint.
+#[cfg(feature = "glterm-spike")]
+pub fn run_gl_term() -> Metrics {
+    let clock = MonotonicClock::new();
+    let area = Rect::new(0, 0, 80, 40);
+    let config = Config::default();
+    let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
+    let mut host = crate::glterm::GlTermModel::new(area);
+    let input = scripted_input();
+
+    let raw = measure_frames(&clock, &mut core, &input, |c| host.paint(c));
+
+    let mut metrics = summarize(&raw, "gl-term", live_footprint_for(&["glterm-spike"]));
+    // Resident variant: fill the warm-toggle row with the re-show repaint cost,
+    // modelled the same way as native-GUI (reset + one repaint through the host).
+    let warm_clock = MonotonicClock::new();
+    let mut warm_core = LauncherCore::from_apps(synthetic_apps(), config);
+    let mut warm_host = crate::glterm::GlTermModel::new(area);
+    metrics.warm_toggle_ns = Some(warm_toggle_span(&warm_clock, &mut warm_core, |c| {
+        warm_host.paint(c)
+    }));
+    metrics
+}
+
+/// Render the gl-term column beside the baseline — the report the
+/// `hyprburst-spike-glterm` binary prints under `--bench` in a Skia-free build
+/// (the Freya columns need the Freya feature). With `--all-features`, the full
+/// four-column bake-off comes from [`run_bake_off_report`].
+#[cfg(feature = "glterm-spike")]
+pub fn run_gl_term_report() -> String {
+    let metrics = [run_baseline(), run_gl_term()];
+    format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
+}
+
+/// Render the head-to-head bake-off table with all four columns — baseline TUI,
+/// native-GUI POC, Freya embedded-terminal POC, and slim gl-term POC — side by
+/// side, plus the machine-readable record. Available only with the `freya-spike`
+/// feature, which builds every variant (`freya-spike` turns on `glterm-spike`).
 #[cfg(feature = "freya-spike")]
 pub fn run_bake_off_report() -> String {
-    let metrics = [run_baseline(), run_native_gui(), run_embedded_term()];
+    let metrics = [
+        run_baseline(),
+        run_native_gui(),
+        run_embedded_term(),
+        run_gl_term(),
+    ];
     format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
 }
 
@@ -963,6 +1026,33 @@ ratatui v0.30.0
         assert!(m.footprint.dep_count.is_some());
         // Spawn-per-launch POC: no resident window to toggle.
         assert_eq!(m.warm_toggle_ns, None);
+    }
+
+    #[cfg(feature = "glterm-spike")]
+    #[test]
+    fn run_gl_term_populates_latency_footprint_and_warm_toggle() {
+        let m = run_gl_term();
+        assert_eq!(m.variant, "gl-term");
+        assert!(m.cold_start_ns > 0);
+        assert!(m.input_latency_ns > 0);
+        assert!(m.fps > 0.0);
+        assert!(m.footprint.peak_rss_kb.is_some());
+        assert!(m.footprint.binary_size_bytes.is_some());
+        assert!(m.footprint.dep_count.is_some());
+        // Resident variant: the host window stays mapped, so warm-toggle is filled.
+        assert!(
+            m.warm_toggle_ns.is_some_and(|ns| ns > 0),
+            "resident gl-term must report a warm-toggle latency",
+        );
+    }
+
+    #[cfg(feature = "glterm-spike")]
+    #[test]
+    fn run_gl_term_report_shows_baseline_and_gl_term() {
+        let report = run_gl_term_report();
+        assert!(report.contains("baseline-tui"));
+        assert!(report.contains("gl-term"));
+        assert!(report.contains("warm toggle"));
     }
 
     #[test]

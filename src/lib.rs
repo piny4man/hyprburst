@@ -19,7 +19,7 @@ pub mod layout;
 pub mod search;
 #[cfg(feature = "freya-spike")]
 pub mod spike_metrics;
-#[cfg(feature = "freya-spike")]
+#[cfg(any(feature = "freya-spike", feature = "glterm-spike"))]
 pub mod term_host;
 pub mod terminal;
 pub mod terminal_resolver;
