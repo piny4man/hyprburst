@@ -6,6 +6,7 @@ pub mod history;
 pub mod icon;
 pub mod input;
 pub mod launcher;
+pub mod launcher_core;
 pub mod layout;
 pub mod search;
 pub mod terminal;
