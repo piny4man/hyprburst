@@ -67,13 +67,46 @@ freya-winit = { version = "0.4.0-rc.21", optional = true }
 # delivery on a dedicated thread. Zero new packages in the `Cargo.lock` union.
 signal-hook = { version = "0.3", optional = true }
 
+# Phase 7 deliverable 2: the slim gl-term variant (`hyprburst-spike-glterm`) — a
+# resident terminal host built *without* Freya/Skia, to measure owning the surface
+# and feeling instant against Skia's 278-crate tree (gate 5). winit, glutin,
+# glutin-winit, ab_glyph, and raw-window-handle are *already* pulled transitively
+# by the Freya stack, so they add nothing to the `Cargo.lock` union; `glow` (a thin
+# GL function-pointer loader, no transitive deps of its own) is the only new crate.
+# All optional and gated behind `glterm-spike`, so the default build, shipped
+# binary, and crates.io packaging stay byte-for-byte unaffected.
+winit = { version = "0.30", optional = true }
+glutin = { version = "0.32", optional = true }
+glutin-winit = { version = "0.5", optional = true }
+glow = { version = "0.16", optional = true }
+ab_glyph = { version = "0.2", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+
 [features]
 # Off by default. Enables the Freya POC binaries and their dependency stack.
+# Also turns on `glterm-spike` so a single `--features freya-spike` build still
+# produces every spike binary, including the Skia-free gl-term host.
 freya-spike = [
     "dep:freya",
     "dep:alacritty_terminal",
     "dep:image",
     "dep:freya-winit",
+    "dep:signal-hook",
+    "glterm-spike",
+]
+
+# Phase 7 slim gl-term host. Pulls the winit + glutin/glow + ab_glyph + PTY stack
+# (no Freya/Skia), so its `cargo tree` dep count is the gate-5 "without Skia"
+# contrast. `alacritty_terminal` (PTY + VT parser) and `signal-hook` (resident
+# warm-toggle trigger) are shared with the Freya variants but still optional.
+glterm-spike = [
+    "dep:winit",
+    "dep:glutin",
+    "dep:glutin-winit",
+    "dep:glow",
+    "dep:ab_glyph",
+    "dep:raw-window-handle",
+    "dep:alacritty_terminal",
     "dep:signal-hook",
 ]
 

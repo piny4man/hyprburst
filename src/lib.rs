@@ -3,6 +3,8 @@ pub mod bench;
 pub mod config;
 pub mod desktop;
 pub mod effects;
+#[cfg(feature = "glterm-spike")]
+pub mod glterm;
 #[cfg(feature = "freya-spike")]
 pub mod gui;
 #[cfg(feature = "freya-spike")]
