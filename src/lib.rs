@@ -15,6 +15,8 @@ pub mod launcher_core;
 pub mod layout;
 pub mod search;
 #[cfg(feature = "freya-spike")]
+pub mod spike_metrics;
+#[cfg(feature = "freya-spike")]
 pub mod term_host;
 pub mod terminal;
 pub mod terminal_resolver;

@@ -27,6 +27,7 @@ use freya::prelude::*;
 use freya::terminal::{Terminal, TerminalHandle, TerminalId};
 use hyprburst::bench;
 use hyprburst::gui;
+use hyprburst::spike_metrics::FirstPaintPlugin;
 use hyprburst::term_host;
 
 /// Wayland app-id — must match the id the shipped windowrules target.
@@ -36,11 +37,19 @@ const VARIANT: &str = "embedded-term";
 
 /// Process-start reference, set once at the top of `main`.
 static START: OnceLock<Instant> = OnceLock::new();
-/// Nanoseconds from process start to the first app render (0 = not yet painted).
+/// Nanoseconds from process start to the app root's first component render
+/// (0 = not yet rendered). Reported only as a breakdown — it fires before Skia
+/// paints, and well before the inner `hyprburst tui` produces output.
 static FIRST_FRAME_NS: AtomicU64 = AtomicU64::new(0);
+/// Nanoseconds from process start to the first frame *presented* to the window
+/// (0 = not yet painted). The honest time-to-window-visible. Note: for this
+/// embedded variant the window presents (possibly an empty terminal) before the
+/// PTY's inner TUI has painted, so true "until you see hyprburst" is later still.
+static FIRST_PRESENT_NS: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
-    let _ = START.set(Instant::now());
+    let start = Instant::now();
+    let _ = START.set(start);
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Headless benchmark mode: no window, just the comparison table.
@@ -56,14 +65,18 @@ fn main() {
     spawn_reporter(measure);
 
     launch(
-        LaunchConfig::new().with_exit_on_close(true).with_window(
-            WindowConfig::new(app)
-                .with_app_id(APP_ID)
-                .with_title("hyprburst (freya spike — embedded terminal)")
-                .with_size(f64::from(gui::WINDOW_WIDTH), f64::from(gui::WINDOW_HEIGHT))
-                .with_transparency(true)
-                .with_background(gui::WINDOW_CLEAR),
-        ),
+        LaunchConfig::new()
+            .with_exit_on_close(true)
+            // Stamp the honest window-visible cold-start at the first frame present.
+            .with_plugin(FirstPaintPlugin::new(start, &FIRST_PRESENT_NS))
+            .with_window(
+                WindowConfig::new(app)
+                    .with_app_id(APP_ID)
+                    .with_title("hyprburst (freya spike — embedded terminal)")
+                    .with_size(f64::from(gui::WINDOW_WIDTH), f64::from(gui::WINDOW_HEIGHT))
+                    .with_transparency(true)
+                    .with_background(gui::WINDOW_CLEAR),
+            ),
     );
 }
 
@@ -129,11 +142,13 @@ fn app() -> impl IntoElement {
 fn spawn_reporter(exit_after: bool) {
     std::thread::spawn(move || {
         loop {
-            let ns = FIRST_FRAME_NS.load(Ordering::SeqCst);
-            if ns != 0 {
-                // Let the GPU surface actually paint and settle before we read RSS.
+            // Wait for the first *presented* frame (honest time-to-window-visible),
+            // not the much earlier first component render.
+            let present_ns = FIRST_PRESENT_NS.load(Ordering::SeqCst);
+            if present_ns != 0 {
+                // Let the GPU surface settle before we read peak RSS.
                 std::thread::sleep(Duration::from_millis(50));
-                report(ns);
+                report(present_ns);
                 if exit_after {
                     std::process::exit(0);
                 }
@@ -156,10 +171,21 @@ fn spawn_reporter(exit_after: bool) {
     });
 }
 
-/// Print the live embedded-terminal column: cold-start to first frame plus
-/// footprint, reusing the exact contract the baseline TUI column uses. Input-
-/// latency / fps for this variant come from the headless `--bench` run.
+/// Print the live embedded-terminal column: cold-start (to first presented frame)
+/// plus footprint, reusing the exact contract the baseline TUI column uses. A
+/// render-vs-present breakdown goes to stderr; note the inner `hyprburst tui`
+/// paints *after* this present, so perceived "until you see hyprburst" is later.
+/// Input-latency / fps for this variant come from the headless `--bench` run.
 fn report(cold_start_ns: u64) {
+    let render_ns = FIRST_FRAME_NS.load(Ordering::SeqCst);
+    if render_ns != 0 {
+        eprintln!(
+            "hyprburst-spike-term: first render {:.3} ms → window present {:.3} ms (Skia adds {:.3} ms); the inner TUI paints after this",
+            render_ns as f64 / 1e6,
+            cold_start_ns as f64 / 1e6,
+            cold_start_ns.saturating_sub(render_ns) as f64 / 1e6,
+        );
+    }
     let footprint = bench::live_footprint_for(&["freya-spike"]);
     let metrics = [bench::probe_metrics(VARIANT, cold_start_ns, footprint)];
     print!(

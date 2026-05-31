@@ -376,7 +376,7 @@ pub fn run_native_gui() -> Metrics {
 
     let raw = measure_frames(&clock, &mut core, &input, |c| {
         let view = c.view();
-        let frame = crate::gui::build_frame(&view, &config, crate::gui::IconMode::Glyph);
+        let frame = crate::gui::build_frame(&view, &config);
         std::hint::black_box(&frame);
     });
 
@@ -845,7 +845,7 @@ ratatui v0.30.0
 
         let raw = measure_frames(&clock, &mut core, &input, |c| {
             let view = c.view();
-            let frame = crate::gui::build_frame(&view, &config, crate::gui::IconMode::Glyph);
+            let frame = crate::gui::build_frame(&view, &config);
             std::hint::black_box(&frame);
         });
 

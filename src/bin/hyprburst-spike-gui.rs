@@ -28,6 +28,8 @@
 //! Cold-start here is measured from process start to the app root's first
 //! render; a short settle lets the GPU surface allocate before peak RSS is read.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -37,6 +39,7 @@ use hyprburst::bench;
 use hyprburst::config::Config;
 use hyprburst::gui;
 use hyprburst::launcher_core::LauncherCore;
+use hyprburst::spike_metrics::FirstPaintPlugin;
 
 /// Wayland app-id — must match the id the shipped windowrules target.
 const APP_ID: &str = "hyprburst";
@@ -45,11 +48,17 @@ const VARIANT: &str = "native-gui";
 
 /// Process-start reference, set once at the top of `main`.
 static START: OnceLock<Instant> = OnceLock::new();
-/// Nanoseconds from process start to the first app render (0 = not yet painted).
+/// Nanoseconds from process start to the app root's first component render
+/// (0 = not yet rendered). Fires early — before Skia paints — so it's reported
+/// only as a breakdown, not as the cold-start headline.
 static FIRST_FRAME_NS: AtomicU64 = AtomicU64::new(0);
+/// Nanoseconds from process start to the first frame actually *presented* to the
+/// window (0 = not yet painted). This is the honest cold-start: time-to-visible.
+static FIRST_PRESENT_NS: AtomicU64 = AtomicU64::new(0);
 
 fn main() {
-    let _ = START.set(Instant::now());
+    let start = Instant::now();
+    let _ = START.set(start);
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     // Headless benchmark mode: no window, just the comparison table.
@@ -71,14 +80,18 @@ fn main() {
     spawn_reporter(measure);
 
     launch(
-        LaunchConfig::new().with_exit_on_close(true).with_window(
-            WindowConfig::new(app)
-                .with_app_id(APP_ID)
-                .with_title("hyprburst (freya spike)")
-                .with_size(f64::from(gui::WINDOW_WIDTH), f64::from(gui::WINDOW_HEIGHT))
-                .with_transparency(true)
-                .with_background(gui::WINDOW_CLEAR),
-        ),
+        LaunchConfig::new()
+            .with_exit_on_close(true)
+            // Stamp the honest cold-start at the first real frame present.
+            .with_plugin(FirstPaintPlugin::new(start, &FIRST_PRESENT_NS))
+            .with_window(
+                WindowConfig::new(app)
+                    .with_app_id(APP_ID)
+                    .with_title("hyprburst (freya spike)")
+                    .with_size(f64::from(gui::WINDOW_WIDTH), f64::from(gui::WINDOW_HEIGHT))
+                    .with_transparency(true)
+                    .with_background(gui::WINDOW_CLEAR),
+            ),
     );
 }
 
@@ -102,13 +115,22 @@ fn app() -> impl IntoElement {
         core
     });
 
+    // Icon mode is read from the environment (`HYPRBURST_GUI_ICONS`) once; the
+    // themed path holds a persistent resolver so each icon name is resolved at
+    // most once per process (resolving per frame makes the launcher unnavigable).
+    let mode = use_hook(gui::icon_mode);
+    let resolver = use_hook(|| Rc::new(RefCell::new(gui::IconResolver::default())));
+
     let content = {
         let core = core.read();
         let view = core.view();
-        // Icon path chosen once from the environment (`HYPRBURST_GUI_ICONS`):
-        // glyph by default, themed images when opted in (Phase 6).
-        let frame = gui::build_frame(&view, core.config(), gui::icon_mode());
-        gui::render_frame(&frame, core.config())
+        let frame = gui::build_frame(&view, core.config());
+        if mode == gui::IconMode::Themed {
+            let mut resolver = resolver.borrow_mut();
+            gui::render_frame(&frame, core.config(), Some(&mut resolver))
+        } else {
+            gui::render_frame(&frame, core.config(), None)
+        }
     };
 
     rect()
@@ -146,11 +168,13 @@ fn load_config() -> Config {
 fn spawn_reporter(exit_after: bool) {
     std::thread::spawn(move || {
         loop {
-            let ns = FIRST_FRAME_NS.load(Ordering::SeqCst);
-            if ns != 0 {
-                // Let the GPU surface actually paint and settle before we read RSS.
+            // Wait for the first *presented* frame — the honest time-to-visible —
+            // not the much earlier first component render.
+            let present_ns = FIRST_PRESENT_NS.load(Ordering::SeqCst);
+            if present_ns != 0 {
+                // Let the GPU surface settle before we read peak RSS.
                 std::thread::sleep(Duration::from_millis(50));
-                report(ns);
+                report(present_ns);
                 if exit_after {
                     std::process::exit(0);
                 }
@@ -173,10 +197,20 @@ fn spawn_reporter(exit_after: bool) {
     });
 }
 
-/// Print the live native-GUI column: cold-start to first frame plus footprint,
-/// reusing the exact contract the baseline TUI column uses. Input-latency / fps
-/// for this variant come from the headless `--bench` run.
+/// Print the live native-GUI column: cold-start (to first presented frame) plus
+/// footprint, reusing the exact contract the baseline TUI column uses. A
+/// render-vs-present breakdown goes to stderr so the gap Skia adds after the
+/// first component render is visible. Input-latency / fps come from `--bench`.
 fn report(cold_start_ns: u64) {
+    let render_ns = FIRST_FRAME_NS.load(Ordering::SeqCst);
+    if render_ns != 0 {
+        eprintln!(
+            "hyprburst-spike-gui: first render {:.3} ms → first present {:.3} ms (Skia/present adds {:.3} ms)",
+            render_ns as f64 / 1e6,
+            cold_start_ns as f64 / 1e6,
+            cold_start_ns.saturating_sub(render_ns) as f64 / 1e6,
+        );
+    }
     let footprint = bench::live_footprint_for(&["freya-spike"]);
     let metrics = [bench::probe_metrics(VARIANT, cold_start_ns, footprint)];
     print!(

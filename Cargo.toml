@@ -54,10 +54,16 @@ alacritty_terminal = { version = "0.26", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = [
     "png",
 ] }
+# Same Skia spike. `freya-winit` is the windowing backend Freya already pulls;
+# depending on it directly (still optional, still gated) gives access to its
+# plugin API so the POCs can stamp an *honest* cold-start at the first real frame
+# present (`AfterPresenting`) instead of the first component render, which fires
+# well before Skia paints and the compositor shows the window. Zero new packages.
+freya-winit = { version = "0.4.0-rc.21", optional = true }
 
 [features]
 # Off by default. Enables the Freya POC binaries and their dependency stack.
-freya-spike = ["dep:freya", "dep:alacritty_terminal", "dep:image"]
+freya-spike = ["dep:freya", "dep:alacritty_terminal", "dep:image", "dep:freya-winit"]
 
 # Thin Phase 3 viability probe — grows into the real native-GUI POC in Phase 4.
 # Gated so it is never built (and Freya is never pulled) without the feature.

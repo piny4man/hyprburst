@@ -2,9 +2,23 @@ use std::path::{Path, PathBuf};
 
 const ICON_EXTENSIONS: &[&str] = &["png", "svg", "xpm"];
 
+/// Raster formats Skia's `from_encoded` can decode. The Freya GUI themed-icon
+/// path uses only these, so SVG/XPM-only entries resolve to `None` and fall back
+/// to a glyph rather than handing Skia bytes it can't decode.
+#[allow(dead_code)]
+pub const RASTER_ICON_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+
 #[allow(dead_code)]
 pub fn resolve_icon(name: &str) -> Option<PathBuf> {
     resolve_icon_in(name, &icon_search_paths())
+}
+
+/// Resolve `name` to a raster icon file (see [`RASTER_ICON_EXTENSIONS`]) the GUI
+/// can decode, searching the system theme paths. Used by the Freya themed-icon
+/// path; returns `None` when only vector/unsupported formats exist.
+#[allow(dead_code)]
+pub fn resolve_raster_icon(name: &str) -> Option<PathBuf> {
+    resolve_icon_in_ext(name, &icon_search_paths(), RASTER_ICON_EXTENSIONS)
 }
 
 #[allow(dead_code)]
@@ -33,6 +47,14 @@ pub(crate) fn icon_search_paths() -> Vec<PathBuf> {
 
 #[allow(dead_code)]
 pub(crate) fn resolve_icon_in(name: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
+    resolve_icon_in_ext(name, search_paths, ICON_EXTENSIONS)
+}
+
+/// [`resolve_icon_in`] parameterized by the accepted file extensions, so the GUI
+/// can restrict resolution to raster formats while the default path keeps the
+/// full `png`/`svg`/`xpm` set.
+#[allow(dead_code)]
+fn resolve_icon_in_ext(name: &str, search_paths: &[PathBuf], exts: &[&str]) -> Option<PathBuf> {
     if name.is_empty() {
         return None;
     }
@@ -43,13 +65,13 @@ pub(crate) fn resolve_icon_in(name: &str, search_paths: &[PathBuf]) -> Option<Pa
     }
 
     for base in search_paths {
-        for ext in ICON_EXTENSIONS {
+        for ext in exts {
             let candidate = base.join(format!("{}.{}", name, ext));
             if candidate.is_file() {
                 return Some(candidate);
             }
         }
-        if let Some(found) = find_icon_recursive(base, name, 4) {
+        if let Some(found) = find_icon_recursive(base, name, 4, exts) {
             return Some(found);
         }
     }
@@ -57,7 +79,7 @@ pub(crate) fn resolve_icon_in(name: &str, search_paths: &[PathBuf]) -> Option<Pa
 }
 
 #[allow(dead_code)]
-fn find_icon_recursive(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+fn find_icon_recursive(dir: &Path, name: &str, depth: usize, exts: &[&str]) -> Option<PathBuf> {
     if depth == 0 || !dir.is_dir() {
         return None;
     }
@@ -73,13 +95,13 @@ fn find_icon_recursive(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> 
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
             && stem == name
             && let Some(ext) = path.extension().and_then(|s| s.to_str())
-            && ICON_EXTENSIONS.contains(&ext)
+            && exts.contains(&ext)
         {
             return Some(path);
         }
     }
     for sub in subdirs {
-        if let Some(found) = find_icon_recursive(&sub, name, depth - 1) {
+        if let Some(found) = find_icon_recursive(&sub, name, depth - 1, exts) {
             return Some(found);
         }
     }

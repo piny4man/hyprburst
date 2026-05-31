@@ -36,7 +36,7 @@ use image::codecs::png::PngEncoder;
 
 use crate::config::Config;
 use crate::desktop::DesktopEntry;
-use crate::gui::{IconMode, build_frame};
+use crate::gui::build_frame;
 use crate::launcher_core::LauncherCore;
 
 /// Square side, in pixels, of a synthetic benchmark icon. Sized in the range of
@@ -158,7 +158,7 @@ impl IconRenderModel {
     /// lookup; misses pay the decode — exactly the themed path's added cost.
     pub fn paint(&mut self, core: &mut LauncherCore) {
         let view = core.view();
-        let frame = build_frame(&view, &self.config, IconMode::Glyph);
+        let frame = build_frame(&view, &self.config);
         std::hint::black_box(&frame);
         for entry in &view.entries {
             self.ensure_decoded(entry.icon_name);

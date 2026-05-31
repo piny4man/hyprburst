@@ -106,6 +106,32 @@ fn resolve_icon_mode(value: Option<&str>) -> IconMode {
     }
 }
 
+/// Persistent, per-name cache of resolved themed-icon files.
+///
+/// Resolving an icon walks the system theme directories — far too expensive to
+/// repeat for every entry on every keystroke (doing so makes the launcher
+/// unnavigable). The live render holds one resolver across frames so each icon
+/// name is resolved at most once per process; subsequent lookups are a map hit.
+/// Only raster formats Skia can decode are accepted ([`crate::icon::resolve_raster_icon`]),
+/// so SVG/XPM-only entries resolve to `None` and fall back to the glyph rather
+/// than feeding Skia bytes it can't decode.
+#[derive(Default)]
+pub struct IconResolver {
+    cache: std::collections::HashMap<String, Option<PathBuf>>,
+}
+
+impl IconResolver {
+    /// Resolve `name` to a raster icon file, caching the result (including misses).
+    pub fn resolve(&mut self, name: &str) -> Option<PathBuf> {
+        if let Some(hit) = self.cache.get(name) {
+            return hit.clone();
+        }
+        let resolved = crate::icon::resolve_raster_icon(name);
+        self.cache.insert(name.to_string(), resolved.clone());
+        resolved
+    }
+}
+
 /// Resolve the font family for the GUI: the [`FONT_ENV`] override when set to a
 /// non-blank value, otherwise the generic [`MONOSPACE_FAMILY`] alias.
 pub fn font_family() -> std::borrow::Cow<'static, str> {
@@ -141,15 +167,18 @@ pub fn columns_for(config: &Config) -> u16 {
 /// One rendered grid cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuiCell {
-    /// The text to draw. In glyph mode this is `"<glyph> <name>"` (or just the
-    /// name when icons are off); in themed mode with a resolved icon the glyph is
-    /// dropped and the image carried in [`icon_path`](Self::icon_path) is drawn
-    /// instead, so this is `"<name>"` with the selection marker prefix.
+    /// The glyph text — `"<marker><glyph> <name>"` (or `"<marker><name>"` when
+    /// icons are off). This is what renders in glyph mode, and the fallback when
+    /// a themed icon can't be resolved or decoded.
     pub text: String,
-    /// Resolved themed-icon file to draw before the text. `Some` only in
-    /// [`IconMode::Themed`] when the system theme has an icon for the entry;
-    /// `None` otherwise, in which case the glyph in [`text`](Self::text) renders.
-    pub icon_path: Option<PathBuf>,
+    /// The same cell without the glyph — `"<marker><name>"`. Used as the label
+    /// beside a themed image, so the glyph isn't doubled up with the icon.
+    pub name_only_text: String,
+    /// Raw icon-theme name for this entry (e.g. `"firefox"`), resolved to a real
+    /// file by the live [`IconResolver`] only in themed mode. Carried here (rather
+    /// than resolved in [`build_frame`]) so the pure frame build stays free of
+    /// filesystem work — resolution is cached and happens once per name at render.
+    pub icon_name: String,
     pub selected: bool,
 }
 
@@ -202,15 +231,12 @@ pub fn key_to_action(key: &Key) -> Option<LauncherAction> {
 }
 
 /// Build the per-frame render model from the core's view. Pure CPU work, no
-/// Freya runtime required — this is what the harness times each frame.
-///
-/// `mode` selects the icon path: [`IconMode::Glyph`] keeps cells text-only (the
-/// harness's glyph column and the default live render); [`IconMode::Themed`]
-/// resolves a real themed-icon file per entry via [`crate::icon::resolve_icon`]
-/// and, on a hit, drops the glyph from the text and records the path in
-/// [`GuiCell::icon_path`] for [`render_frame`] to draw — falling back to the
-/// glyph text when the theme has no icon, so the launcher always renders.
-pub fn build_frame(view: &LauncherView, config: &Config, mode: IconMode) -> GuiFrame {
+/// Freya runtime and no filesystem access — this is what the harness times each
+/// frame, and it must stay cheap because it runs on every keystroke. Each cell
+/// carries both its glyph text and a glyph-free variant plus the raw icon name;
+/// the live [`render_frame`] chooses between them and resolves a themed icon
+/// (cached) only when the themed toggle is on.
+pub fn build_frame(view: &LauncherView, config: &Config) -> GuiFrame {
     let banner_lines = if config.ui.banner.is_empty() {
         Vec::new()
     } else {
@@ -248,29 +274,22 @@ pub fn build_frame(view: &LauncherView, config: &Config, mode: IconMode) -> GuiF
             chunk
                 .iter()
                 .map(|entry| {
-                    // In themed mode, try to resolve a real icon file; on a hit
-                    // the image replaces the glyph, otherwise we keep the glyph as
-                    // a fallback so the row never goes iconless.
-                    let icon_path = match mode {
-                        IconMode::Themed if config.ui.show_icons => {
-                            crate::icon::resolve_icon(entry.icon_name)
-                        }
-                        _ => None,
-                    };
-                    let body = match (&icon_path, config.ui.show_icons) {
-                        // Image will be drawn separately — text is just the name.
-                        (Some(_), _) => entry.name.to_string(),
-                        (None, true) => format!("{} {}", entry.icon_glyph, entry.name),
-                        (None, false) => entry.name.to_string(),
-                    };
                     let prefix: &str = if entry.selected {
                         marker
                     } else {
                         &unselected_prefix
                     };
+                    // Glyph variant (the default and the fallback) and a glyph-free
+                    // variant (used when a themed image is drawn beside it).
+                    let text = if config.ui.show_icons {
+                        format!("{prefix}{} {}", entry.icon_glyph, entry.name)
+                    } else {
+                        format!("{prefix}{}", entry.name)
+                    };
                     GuiCell {
-                        text: format!("{prefix}{body}"),
-                        icon_path,
+                        text,
+                        name_only_text: format!("{prefix}{}", entry.name),
+                        icon_name: entry.icon_name.to_string(),
                         selected: entry.selected,
                     }
                 })
@@ -289,7 +308,16 @@ pub fn build_frame(view: &LauncherView, config: &Config, mode: IconMode) -> GuiF
 
 /// Map a [`GuiFrame`] into a Freya element tree. Only called inside the live
 /// window component (the Freya runtime must be active).
-pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
+///
+/// When `resolver` is `Some` (themed-icon toggle on), each cell's icon name is
+/// resolved through the cache and, on a raster hit, drawn as an image beside the
+/// name (glyph-falling-back while loading or on a decode error). When `None`
+/// (the default glyph mode), only text renders and no filesystem work happens.
+pub fn render_frame(
+    frame: &GuiFrame,
+    config: &Config,
+    mut resolver: Option<&mut IconResolver>,
+) -> Element {
     let banner_rgb = color_rgb(config.colors.banner);
     let prompt_rgb = color_rgb(config.colors.prompt);
     let selected_rgb = color_rgb(config.colors.selected);
@@ -337,13 +365,31 @@ pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
                 .into_element(),
         );
     } else {
+        // Pre-resolve every cell's themed icon (cached) up front with explicit
+        // loops, so the element-building below borrows nothing mutably. Resolution
+        // is a map hit after the first frame, keeping navigation responsive.
+        let mut resolved: Vec<Vec<Option<PathBuf>>> = Vec::with_capacity(frame.rows.len());
+        for row in &frame.rows {
+            let mut paths = Vec::with_capacity(row.len());
+            for cell in row {
+                let path = match resolver.as_deref_mut() {
+                    Some(r) if config.ui.show_icons => r.resolve(&cell.icon_name),
+                    _ => None,
+                };
+                paths.push(path);
+            }
+            resolved.push(paths);
+        }
+
         let rows: Vec<Element> = frame
             .rows
             .iter()
-            .map(|row| {
+            .zip(resolved)
+            .map(|(row, row_paths)| {
                 let cells: Vec<Element> = row
                     .iter()
-                    .map(|cell| render_cell(cell, selected_rgb))
+                    .zip(row_paths)
+                    .map(|(cell, icon_path)| render_cell(cell, selected_rgb, icon_path))
                     .collect();
                 rect()
                     .direction(Direction::horizontal())
@@ -373,14 +419,15 @@ pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
         .into_element()
 }
 
-/// Render one grid cell into a Freya element. When the cell carries a resolved
-/// themed icon ([`GuiCell::icon_path`]), draws the image in a fixed
-/// [`ENTRY_ICON_PX`] box followed by the name label; otherwise draws the cell
-/// text (which already contains the glyph). Selected rows are bold and
+/// Render one grid cell into a Freya element. With a resolved raster `icon_path`,
+/// draws the image in a fixed [`ENTRY_ICON_PX`] box followed by the glyph-free
+/// name; while the image loads or if it fails to decode, the cell's glyph text is
+/// shown instead, so a cell never flashes a spinner or the "Failed to decode"
+/// string. Without a path, the glyph text renders. Selected rows are bold and
 /// accent-colored — no background box — matching the TUI's marker-and-bold style.
-fn render_cell(cell: &GuiCell, selected_rgb: (u8, u8, u8)) -> Element {
-    let text_node = {
-        let node = label().text(cell.text.clone()).font_size(ENTRY_FONT_SIZE);
+fn render_cell(cell: &GuiCell, selected_rgb: (u8, u8, u8), icon_path: Option<PathBuf>) -> Element {
+    let styled = |text: String| {
+        let node = label().text(text).font_size(ENTRY_FONT_SIZE);
         if cell.selected {
             node.color(selected_rgb).font_weight(FontWeight::BOLD)
         } else {
@@ -388,23 +435,28 @@ fn render_cell(cell: &GuiCell, selected_rgb: (u8, u8, u8)) -> Element {
         }
     };
 
-    match &cell.icon_path {
-        // Themed icon resolved: image box + name label on one row. `ImageViewer`
-        // handles async decode, caching, and error states; if the file fails to
-        // decode it simply renders nothing, leaving the name legible.
-        Some(path) => rect()
-            .direction(Direction::horizontal())
-            .cross_align(Alignment::Center)
-            .spacing(8.0)
-            .child(
-                ImageViewer::new(path.clone())
-                    .width(Size::px(ENTRY_ICON_PX))
-                    .height(Size::px(ENTRY_ICON_PX))
-                    .into_element(),
-            )
-            .child(text_node.into_element())
-            .into_element(),
-        None => text_node.into_element(),
+    match icon_path {
+        Some(path) => {
+            // Glyph fallbacks for the loading and error states, so the row always
+            // shows something legible even when the image is slow or undecodable.
+            let loading_glyph = styled(cell.text.clone()).into_element();
+            let error_glyph = styled(cell.text.clone()).into_element();
+            rect()
+                .direction(Direction::horizontal())
+                .cross_align(Alignment::Center)
+                .spacing(8.0)
+                .child(
+                    ImageViewer::new(path)
+                        .width(Size::px(ENTRY_ICON_PX))
+                        .height(Size::px(ENTRY_ICON_PX))
+                        .loading_placeholder(loading_glyph)
+                        .error_renderer(move |_err: String| error_glyph.clone())
+                        .into_element(),
+                )
+                .child(styled(cell.name_only_text.clone()).into_element())
+                .into_element()
+        }
+        None => styled(cell.text.clone()).into_element(),
     }
 }
 
@@ -517,7 +569,7 @@ mod tests {
         let mut core = LauncherCore::for_test(apps(7), Config::default());
         core.set_columns(3);
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
 
         // 7 entries, 3 columns → rows of 3, 3, 1.
         let row_lens: Vec<usize> = frame.rows.iter().map(Vec::len).collect();
@@ -530,7 +582,7 @@ mod tests {
         core.set_columns(2);
         core.apply(LauncherAction::MoveDown); // select index 2 (row 1, col 0)
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
 
         let selected: Vec<(usize, usize)> = frame
             .rows
@@ -556,7 +608,7 @@ mod tests {
         };
         let core = LauncherCore::for_test(vec![app], Config::default());
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
 
         let cell = &frame.rows[0][0];
         assert!(
@@ -583,7 +635,7 @@ mod tests {
         };
         let core = LauncherCore::for_test(vec![app], cfg);
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
 
         // Single app is selected by default, so it carries the marker prefix but
         // no icon glyph.
@@ -595,7 +647,7 @@ mod tests {
         let mut core = LauncherCore::for_test(apps(2), Config::default());
         core.set_columns(1);
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
 
         // Default marker "> " is two columns wide; the unselected row is padded
         // with the same width so names align.
@@ -610,7 +662,7 @@ mod tests {
     fn build_frame_emits_cursor_glyph_when_enabled() {
         let core = LauncherCore::for_test(apps(1), Config::default());
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
         assert_eq!(frame.cursor.as_deref(), Some("█"));
     }
 
@@ -625,7 +677,7 @@ mod tests {
         };
         let core = LauncherCore::for_test(apps(1), cfg);
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
         assert_eq!(frame.cursor, None);
     }
 
@@ -641,64 +693,39 @@ mod tests {
     }
 
     #[test]
-    fn build_frame_themed_falls_back_to_glyph_when_icon_unresolved() {
-        // An icon name that cannot exist in any real theme → themed mode must
-        // fall back to the glyph so the entry still renders.
+    fn build_frame_carries_name_only_text_and_icon_name() {
         let app = DesktopEntry {
-            id: "mystery".into(),
-            name: "Mystery".into(),
-            icon: "zzz-nonexistent-icon-xyzzy-0000".into(),
-            exec: "mystery".into(),
+            id: "firefox".into(),
+            name: "Firefox".into(),
+            icon: "firefox".into(),
+            exec: "firefox".into(),
         };
         let core = LauncherCore::for_test(vec![app], Config::default());
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Themed);
+        let frame = build_frame(&view, core.config());
 
         let cell = &frame.rows[0][0];
-        assert_eq!(cell.icon_path, None, "no theme icon should resolve");
-        // Unknown app → generic Nerd Font glyph (nf-fa-cube, U+F1B2) must remain.
+        // Glyph text keeps marker + glyph + name; the name-only variant drops just
+        // the glyph (drawn beside a themed image); the raw icon name is carried
+        // for the live resolver.
+        assert!(cell.text.contains('\u{f269}') && cell.text.contains("Firefox"));
+        assert_eq!(cell.name_only_text, "> Firefox");
+        assert_eq!(cell.icon_name, "firefox");
+    }
+
+    #[test]
+    fn icon_resolver_misses_are_cached_and_fall_back_to_none() {
+        // A name that cannot exist in any real theme resolves to `None`; the live
+        // render then keeps the glyph. The negative result must be cached so the
+        // expensive filesystem walk runs at most once per name.
+        let mut resolver = IconResolver::default();
+        let name = "zzz-nonexistent-icon-xyzzy-0000";
+        assert_eq!(resolver.resolve(name), None);
         assert!(
-            cell.text.contains('\u{f1b2}'),
-            "unresolved themed icon must keep the glyph, got {:?}",
-            cell.text,
+            resolver.cache.contains_key(name),
+            "a miss must be cached so it isn't re-walked",
         );
-    }
-
-    #[test]
-    fn build_frame_glyph_mode_never_resolves_an_icon_path() {
-        let app = DesktopEntry {
-            id: "firefox".into(),
-            name: "Firefox".into(),
-            icon: "firefox".into(),
-            exec: "firefox".into(),
-        };
-        let core = LauncherCore::for_test(vec![app], Config::default());
-        let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
-        assert_eq!(frame.rows[0][0].icon_path, None);
-    }
-
-    #[test]
-    fn build_frame_themed_with_icons_disabled_draws_no_image() {
-        let cfg = Config {
-            ui: crate::config::UiConfig {
-                show_icons: false,
-                ..crate::config::UiConfig::default()
-            },
-            ..Config::default()
-        };
-        let app = DesktopEntry {
-            id: "firefox".into(),
-            name: "Firefox".into(),
-            icon: "firefox".into(),
-            exec: "firefox".into(),
-        };
-        let core = LauncherCore::for_test(vec![app], cfg);
-        let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Themed);
-        // Icons disabled: no image path, and the name has no glyph prefix.
-        assert_eq!(frame.rows[0][0].icon_path, None);
-        assert_eq!(frame.rows[0][0].text, "> Firefox");
+        assert_eq!(resolver.resolve(name), None);
     }
 
     #[test]
@@ -735,7 +762,7 @@ mod tests {
         let mut core = LauncherCore::for_test(apps(3), Config::default());
         core.apply(LauncherAction::Insert('a'));
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
         assert_eq!(frame.prompt, "> a");
     }
 
@@ -743,7 +770,7 @@ mod tests {
     fn build_frame_reports_empty_state_message() {
         let core = LauncherCore::for_test(vec![], Config::default());
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
         assert!(frame.rows.is_empty());
         assert_eq!(frame.empty_message, Some("No applications found"));
     }
@@ -759,7 +786,7 @@ mod tests {
         };
         let core = LauncherCore::for_test(apps(1), cfg);
         let view = core.view();
-        let frame = build_frame(&view, core.config(), IconMode::Glyph);
+        let frame = build_frame(&view, core.config());
         assert_eq!(frame.banner_lines, vec!["line one", "line two"]);
     }
 }
