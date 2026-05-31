@@ -371,7 +371,7 @@ pub fn run_native_gui() -> Metrics {
     let clock = MonotonicClock::new();
     let config = Config::default();
     let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
-    core.set_columns(crate::gui::GRID_COLUMNS);
+    core.set_columns(crate::gui::columns_for(&config));
     let input = scripted_input();
 
     let raw = measure_frames(&clock, &mut core, &input, |c| {
@@ -743,7 +743,7 @@ ratatui v0.30.0
         // so the harness times real per-frame work deterministically.
         let config = Config::default();
         let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
-        core.set_columns(crate::gui::GRID_COLUMNS);
+        core.set_columns(crate::gui::columns_for(&config));
         let input = vec![LauncherAction::Insert('a'), LauncherAction::MoveDown];
         // Reads: t0, t1 (cold), then before/after for each of 2 frames.
         let clock = FakeClock::new(vec![0, 100, 200, 350, 400, 600]);

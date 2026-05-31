@@ -22,21 +22,53 @@
 use freya::prelude::*;
 use ratatui::style::Color;
 
-use crate::config::Config;
+use crate::config::{Config, LayoutMode};
 use crate::launcher_core::{EmptyReason, LauncherAction, LauncherView};
 
-/// Number of grid columns the POC window renders. A fixed value (rather than the
-/// config's list/grid mode) so grid navigation is always exercised end-to-end on
-/// the 640 px probe window.
-pub const GRID_COLUMNS: u16 = 3;
+/// Probe-window geometry, shared with the `hyprburst-spike-gui` `WindowConfig`
+/// so the column math and the actual surface agree.
+pub const WINDOW_WIDTH: f32 = 640.0;
+pub const WINDOW_HEIGHT: f32 = 720.0;
+/// Uniform padding around the root content, in px.
+pub const ROOT_PADDING: f32 = 20.0;
+
+/// Font sizes for the three rendered regions (banner / prompt / entry rows).
+pub const BANNER_FONT_SIZE: f32 = 14.0;
+pub const PROMPT_FONT_SIZE: f32 = 22.0;
+pub const ENTRY_FONT_SIZE: f32 = 18.0;
+
+/// Generic monospace family. fontconfig resolves this to the user's configured
+/// monospace face (a Nerd Font on most Hyprland setups), so the banner ASCII art
+/// and grid columns align cell-for-cell like the terminal — the single biggest
+/// visual-parity fix over Freya's proportional default face.
+pub const MONOSPACE_FAMILY: &str = "monospace";
+
+/// Approximate advance width of one monospace glyph as a fraction of its font
+/// size; used only to estimate how many grid columns fit the window.
+const MONO_CHAR_WIDTH_RATIO: f32 = 0.6;
 
 /// Window background; matches the `WindowConfig` background so transparency/blur
 /// windowrules blend cleanly.
 pub const BG: (u8, u8, u8) = (20, 20, 28);
-/// Background fill behind the selected cell.
-pub const SELECTED_BG: (u8, u8, u8) = (40, 42, 60);
 /// Default foreground text color for unselected entries.
 pub const FG: (u8, u8, u8) = (220, 220, 230);
+
+/// Column count for the GUI window, mirroring the TUI [`layout`](crate::layout)
+/// rule: list mode is always a single column; grid mode divides the window's
+/// character-equivalent content width by the configured minimum column width.
+/// This is what makes the default (list) window render one app per row, exactly
+/// like the shipped TUI, instead of a forced multi-column grid.
+pub fn columns_for(config: &Config) -> u16 {
+    match config.layout.mode {
+        LayoutMode::List => 1,
+        LayoutMode::Grid => {
+            let content_px = WINDOW_WIDTH - 2.0 * ROOT_PADDING;
+            let char_px = ENTRY_FONT_SIZE * MONO_CHAR_WIDTH_RATIO;
+            let char_cols = (content_px / char_px) as u16;
+            (char_cols / config.layout.min_column_width.max(1)).max(1)
+        }
+    }
+}
 
 /// One rendered grid cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +85,9 @@ pub struct GuiCell {
 pub struct GuiFrame {
     pub banner_lines: Vec<String>,
     pub prompt: String,
+    /// Cursor glyph drawn immediately after the prompt, or `None` when
+    /// `ui.show_cursor` is off — mirrors the TUI's cursor cell.
+    pub cursor: Option<String>,
     /// `Some(msg)` when there are no entries to show; `rows` is then empty.
     pub empty_message: Option<&'static str>,
     /// Entries chunked into grid rows of up to `view.columns` cells.
@@ -101,6 +136,7 @@ pub fn build_frame(view: &LauncherView, config: &Config) -> GuiFrame {
     };
 
     let prompt = format!("{}{}", config.ui.prompt, view.query);
+    let cursor = config.ui.show_cursor.then(|| config.ui.cursor_char.clone());
 
     if view.entries.is_empty() {
         let msg = match view.empty_reason {
@@ -110,10 +146,17 @@ pub fn build_frame(view: &LauncherView, config: &Config) -> GuiFrame {
         return GuiFrame {
             banner_lines,
             prompt,
+            cursor,
             empty_message: Some(msg),
             rows: Vec::new(),
         };
     }
+
+    // Prefix every entry with the selected marker (selected) or a same-width run
+    // of spaces (others), exactly like the TUI, so the marker column lines up and
+    // the selected row reads identically across both frontends.
+    let marker = config.ui.selected_marker.as_str();
+    let unselected_prefix = " ".repeat(marker.chars().count());
 
     let cols = view.columns.max(1) as usize;
     let rows = view
@@ -123,13 +166,18 @@ pub fn build_frame(view: &LauncherView, config: &Config) -> GuiFrame {
             chunk
                 .iter()
                 .map(|entry| {
-                    let text = if config.ui.show_icons {
+                    let body = if config.ui.show_icons {
                         format!("{} {}", entry.icon_glyph, entry.name)
                     } else {
                         entry.name.to_string()
                     };
+                    let prefix: &str = if entry.selected {
+                        marker
+                    } else {
+                        &unselected_prefix
+                    };
                     GuiCell {
-                        text,
+                        text: format!("{prefix}{body}"),
                         selected: entry.selected,
                     }
                 })
@@ -140,6 +188,7 @@ pub fn build_frame(view: &LauncherView, config: &Config) -> GuiFrame {
     GuiFrame {
         banner_lines,
         prompt,
+        cursor,
         empty_message: None,
         rows,
     }
@@ -155,27 +204,45 @@ pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
 
     let mut children: Vec<Element> = Vec::new();
 
-    // Banner block — one text node per line (the ASCII banner is multi-line).
+    // Banner — a single tight-line-height label so the multi-line ASCII art
+    // stacks cell-for-cell like terminal rows (default paragraph leading would
+    // pull the box-drawing characters apart).
     if !frame.banner_lines.is_empty() {
-        let lines: Vec<Element> = frame
-            .banner_lines
-            .iter()
-            .map(|line| text_node(line.clone(), banner_rgb, 14.0))
-            .collect();
         children.push(
-            rect()
-                .direction(Direction::vertical())
-                .children(lines)
+            label()
+                .text(frame.banner_lines.join("\n"))
+                .line_height(1.0)
+                .color(banner_rgb)
+                .font_size(BANNER_FONT_SIZE)
+                .font_weight(FontWeight::BOLD)
                 .into_element(),
         );
     }
 
-    // Search prompt.
-    children.push(text_node(frame.prompt.clone(), prompt_rgb, 22.0));
+    // Search prompt with the cursor glyph drawn right after it, both in the
+    // prompt color — the same composition the TUI paints.
+    let prompt_text = match &frame.cursor {
+        Some(c) => format!("{}{}", frame.prompt, c),
+        None => frame.prompt.clone(),
+    };
+    children.push(
+        label()
+            .text(prompt_text)
+            .color(prompt_rgb)
+            .font_size(PROMPT_FONT_SIZE)
+            .font_weight(FontWeight::BOLD)
+            .into_element(),
+    );
 
     // List/grid, or the empty-state message.
     if let Some(msg) = frame.empty_message {
-        children.push(text_node(msg.to_string(), empty_rgb, 18.0));
+        children.push(
+            label()
+                .text(msg.to_string())
+                .color(empty_rgb)
+                .font_size(ENTRY_FONT_SIZE)
+                .into_element(),
+        );
     } else {
         let rows: Vec<Element> = frame
             .rows
@@ -184,23 +251,22 @@ pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
                 let cells: Vec<Element> = row
                     .iter()
                     .map(|cell| {
-                        let (fg, bg) = if cell.selected {
-                            (selected_rgb, SELECTED_BG)
+                        // Selected rows are bold and accent-colored (the marker
+                        // prefix is already baked into `cell.text`); others use
+                        // the default foreground — no background box, matching the
+                        // TUI's marker-and-bold selection style.
+                        let mut node = label().text(cell.text.clone()).font_size(ENTRY_FONT_SIZE);
+                        node = if cell.selected {
+                            node.color(selected_rgb).font_weight(FontWeight::BOLD)
                         } else {
-                            (FG, BG)
+                            node.color(FG)
                         };
-                        rect()
-                            .padding(Gaps::new_all(6.0))
-                            .background(bg)
-                            .color(fg)
-                            .font_size(18.0)
-                            .child(cell.text.clone())
-                            .into_element()
+                        node.into_element()
                     })
                     .collect();
                 rect()
                     .direction(Direction::horizontal())
-                    .spacing(12.0)
+                    .spacing(16.0)
                     .children(cells)
                     .into_element()
             })
@@ -208,7 +274,7 @@ pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
         children.push(
             rect()
                 .direction(Direction::vertical())
-                .spacing(6.0)
+                .spacing(2.0)
                 .children(rows)
                 .into_element(),
         );
@@ -217,20 +283,12 @@ pub fn render_frame(frame: &GuiFrame, config: &Config) -> Element {
     rect()
         .expanded()
         .direction(Direction::vertical())
-        .padding(Gaps::new_all(20.0))
-        .spacing(16.0)
+        .padding(Gaps::new_all(ROOT_PADDING))
+        .spacing(12.0)
         .background(BG)
         .color(FG)
+        .font_family(MONOSPACE_FAMILY)
         .children(children)
-        .into_element()
-}
-
-/// A single text node with an explicit color and font size.
-fn text_node(text: String, color: (u8, u8, u8), font_size: f32) -> Element {
-    rect()
-        .color(color)
-        .font_size(font_size)
-        .child(text)
         .into_element()
 }
 
@@ -411,7 +469,67 @@ mod tests {
         let view = core.view();
         let frame = build_frame(&view, core.config());
 
-        assert_eq!(frame.rows[0][0].text, "Firefox");
+        // Single app is selected by default, so it carries the marker prefix but
+        // no icon glyph.
+        assert_eq!(frame.rows[0][0].text, "> Firefox");
+    }
+
+    #[test]
+    fn build_frame_prefixes_selected_marker_and_pads_others() {
+        let mut core = LauncherCore::for_test(apps(2), Config::default());
+        core.set_columns(1);
+        let view = core.view();
+        let frame = build_frame(&view, core.config());
+
+        // Default marker "> " is two columns wide; the unselected row is padded
+        // with the same width so names align.
+        assert!(frame.rows[0][0].selected);
+        assert!(frame.rows[0][0].text.starts_with("> "));
+        assert!(!frame.rows[1][0].selected);
+        assert!(frame.rows[1][0].text.starts_with("  "));
+        assert!(!frame.rows[1][0].text.starts_with("> "));
+    }
+
+    #[test]
+    fn build_frame_emits_cursor_glyph_when_enabled() {
+        let core = LauncherCore::for_test(apps(1), Config::default());
+        let view = core.view();
+        let frame = build_frame(&view, core.config());
+        assert_eq!(frame.cursor.as_deref(), Some("█"));
+    }
+
+    #[test]
+    fn build_frame_omits_cursor_when_disabled() {
+        let cfg = Config {
+            ui: crate::config::UiConfig {
+                show_cursor: false,
+                ..crate::config::UiConfig::default()
+            },
+            ..Config::default()
+        };
+        let core = LauncherCore::for_test(apps(1), cfg);
+        let view = core.view();
+        let frame = build_frame(&view, core.config());
+        assert_eq!(frame.cursor, None);
+    }
+
+    #[test]
+    fn columns_for_lists_single_column_and_grids_multiple() {
+        // Default config is list mode → one app per row, like the TUI.
+        assert_eq!(columns_for(&Config::default()), 1);
+
+        // Grid mode fits more than one column at the default minimum width, and
+        // collapses to a single column once the minimum exceeds the window.
+        let grid = |min| Config {
+            layout: crate::config::LayoutConfig {
+                mode: LayoutMode::Grid,
+                min_column_width: min,
+                ..crate::config::LayoutConfig::default()
+            },
+            ..Config::default()
+        };
+        assert!(columns_for(&grid(20)) >= 2);
+        assert_eq!(columns_for(&grid(1000)), 1);
     }
 
     #[test]

@@ -64,7 +64,7 @@ fn main() {
             WindowConfig::new(app)
                 .with_app_id(APP_ID)
                 .with_title("hyprburst (freya spike)")
-                .with_size(640.0, 720.0)
+                .with_size(f64::from(gui::WINDOW_WIDTH), f64::from(gui::WINDOW_HEIGHT))
                 .with_transparency(true)
                 .with_background(gui::BG),
         ),
@@ -86,7 +86,8 @@ fn app() -> impl IntoElement {
 
     let mut core = use_state(|| {
         let mut core = LauncherCore::new(load_config());
-        core.set_columns(gui::GRID_COLUMNS);
+        let cols = gui::columns_for(core.config());
+        core.set_columns(cols);
         core
     });
 
