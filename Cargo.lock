@@ -2111,6 +2111,7 @@ checksum = "51066092dc750f8cbcac4afa04592377bf7463a911d1beca430ddd788deb0757"
 name = "hyprburst"
 version = "0.4.3"
 dependencies = [
+ "alacritty_terminal",
  "crossterm",
  "freya",
  "ratatui",

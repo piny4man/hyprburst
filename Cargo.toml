@@ -39,16 +39,30 @@ tachyonfx = "0.25"
 # pulls Freya's PTY-backed terminal component (`freya-terminal`), which the
 # Phase 5 embedded-terminal POC hosts; `winit` (default) backs the window.
 freya = { version = "0.4.0-rc.21", optional = true, features = ["terminal"] }
+# Same Skia/PTY spike. `alacritty_terminal` is already pulled transitively by
+# `freya-terminal`; depending on it directly (still optional, still gated) lets
+# the Phase 5 harness model the embedded-terminal frame cost headlessly — parse
+# the launcher's rendered VT bytes through the same emulator Freya hosts —
+# without growing the `Cargo.lock` union or touching the default build.
+alacritty_terminal = { version = "0.26", optional = true }
 
 [features]
 # Off by default. Enables the Freya POC binaries and their dependency stack.
-freya-spike = ["dep:freya"]
+freya-spike = ["dep:freya", "dep:alacritty_terminal"]
 
 # Thin Phase 3 viability probe — grows into the real native-GUI POC in Phase 4.
 # Gated so it is never built (and Freya is never pulled) without the feature.
 [[bin]]
 name = "hyprburst-spike-gui"
 path = "src/bin/hyprburst-spike-gui.rs"
+required-features = ["freya-spike"]
+
+# Phase 5 embedded-terminal POC: a Freya window hosting a PTY that runs
+# `hyprburst tui`. Same feature gate, so neither the default build nor crates.io
+# packaging ever pulls Freya for it.
+[[bin]]
+name = "hyprburst-spike-term"
+path = "src/bin/hyprburst-spike-term.rs"
 required-features = ["freya-spike"]
 
 [profile.release]

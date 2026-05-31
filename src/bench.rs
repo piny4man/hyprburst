@@ -383,12 +383,40 @@ pub fn run_native_gui() -> Metrics {
     summarize(&raw, "native-gui", live_footprint_for(&["freya-spike"]))
 }
 
-/// Render the head-to-head bake-off table with the baseline TUI and native-GUI
-/// POC columns side by side, plus the machine-readable record. Available only
-/// with the `freya-spike` feature, which is what builds the native-GUI variant.
+/// Run the embedded-terminal POC variant against the contract and produce its
+/// [`Metrics`] column.
+///
+/// Paints headlessly via [`crate::term_host::ParseModel`]: each frame renders
+/// the launcher with `render_core` (identical to the baseline — the embedded
+/// variant hosts the *unmodified* TUI), serializes the diff to the VT bytes the
+/// PTY would carry, and advances an `alacritty_terminal` grid with them. So the
+/// input-latency/fps/jank figures capture inner render **plus** the emulator
+/// surcharge Freya's terminal host adds — the cost that distinguishes this
+/// variant — while GPU compositing stays excluded, as in the other columns. The
+/// live window's real cold-start and peak RSS come from the
+/// `hyprburst-spike-term` binary's own report on first paint. Warm-toggle stays
+/// `N/A`: like the other variants, the POC spawns per launch with no resident
+/// window to hide/show.
+#[cfg(feature = "freya-spike")]
+pub fn run_embedded_term() -> Metrics {
+    let clock = MonotonicClock::new();
+    let area = Rect::new(0, 0, 80, 40);
+    let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
+    let mut host = crate::term_host::ParseModel::new(area);
+    let input = scripted_input();
+
+    let raw = measure_frames(&clock, &mut core, &input, |c| host.paint(c));
+
+    summarize(&raw, "embedded-term", live_footprint_for(&["freya-spike"]))
+}
+
+/// Render the head-to-head bake-off table with the baseline TUI, native-GUI POC,
+/// and embedded-terminal POC columns side by side, plus the machine-readable
+/// record. Available only with the `freya-spike` feature, which is what builds
+/// both Freya variants.
 #[cfg(feature = "freya-spike")]
 pub fn run_bake_off_report() -> String {
-    let metrics = [run_baseline(), run_native_gui()];
+    let metrics = [run_baseline(), run_native_gui(), run_embedded_term()];
     format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
 }
 
@@ -763,6 +791,21 @@ ratatui v0.30.0
     fn run_native_gui_populates_latency_and_footprint() {
         let m = run_native_gui();
         assert_eq!(m.variant, "native-gui");
+        assert!(m.cold_start_ns > 0);
+        assert!(m.input_latency_ns > 0);
+        assert!(m.fps > 0.0);
+        assert!(m.footprint.peak_rss_kb.is_some());
+        assert!(m.footprint.binary_size_bytes.is_some());
+        assert!(m.footprint.dep_count.is_some());
+        // Spawn-per-launch POC: no resident window to toggle.
+        assert_eq!(m.warm_toggle_ns, None);
+    }
+
+    #[cfg(feature = "freya-spike")]
+    #[test]
+    fn run_embedded_term_populates_latency_and_footprint() {
+        let m = run_embedded_term();
+        assert_eq!(m.variant, "embedded-term");
         assert!(m.cold_start_ns > 0);
         assert!(m.input_latency_ns > 0);
         assert!(m.fps > 0.0);
