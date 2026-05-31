@@ -14,6 +14,16 @@ Burst lives inside your terminal emulator with a semi-transparent blurred backgr
 - **TOML config** — Customizable colors, banner, and settings at `~/.config/burst/config.toml`
 - **Hyprland native** — Launches apps via `hyprctl dispatch exec`
 
+## Demo
+
+> _Screenshots and a short screen capture live here._ Burst is a fullscreen
+> overlay, so a still of the grid plus a few-second recording of type-to-filter
+> and launch convey it best. Drop assets under `docs/` (e.g. `docs/demo.gif`,
+> `docs/grid.png`) and link them in this section.
+
+<!-- ![Burst grid](docs/grid.png) -->
+<!-- ![Type to filter](docs/demo.gif) -->
+
 ## Project Structure
 
 ```
@@ -42,7 +52,55 @@ burst/
 
 ## Requirements
 
+- **OS** — Linux with [Hyprland](https://hyprland.org/). Burst dispatches launches through `hyprctl`, so it expects a running Hyprland session for the full overlay experience.
+- **Hyprland 0.48+** — the shipped windowrules use the unified `windowrule` syntax (`windowrulev2` is deprecated).
 - **Nerd Font** — burst renders entry icons as Nerd Font glyphs in the private-use Unicode area. The hosting terminal must use a [Nerd Font](https://www.nerdfonts.com/) (e.g. `JetBrainsMono Nerd Font`, `FiraCode Nerd Font`, `Symbols Nerd Font`) or the icons will show as tofu squares.
+- **A terminal emulator** — bare `burst` re-execs into one (see [Terminal resolution](#terminal-resolution)). Any of `alacritty`, `wezterm`, `ghostty`, `kitty`, `foot`, or `rio` works out of the box.
+
+## Install
+
+### From source
+
+Build and install the `burst` binary into `~/.cargo/bin` (make sure it's on your `PATH`):
+
+```bash
+git clone https://github.com/piny4man/burst
+cd burst
+cargo install --path .
+```
+
+To build without installing, use `cargo build --release` — the binary lands at `target/release/burst`.
+
+### From crates.io
+
+> _Available once the first release is published to crates.io._
+
+```bash
+cargo install burst
+```
+
+### From the AUR
+
+> _Available once the AUR package is published._ The planned package name is `burst` (falling back to `burst-launcher` or `burst-bin` if taken). Once live, install it with your preferred AUR helper:
+
+```bash
+paru -S burst   # or: yay -S burst
+```
+
+After installing, drop in the Hyprland config (see [Hyprland Setup](#hyprland-setup)) and bind a key to `burst`.
+
+## Usage
+
+Burst exposes a single binary with a tiny command surface. Run `burst help` for the same summary.
+
+| Command | What it does |
+|---------|--------------|
+| `burst` | Re-execs into your preferred terminal emulator and runs the launcher inside it. This is what the `Super+Space` Hyprland bind invokes — it works from a graphical context with no controlling terminal. See [Terminal resolution](#terminal-resolution). |
+| `burst tui` | Runs the launcher TUI **inline** in the current terminal, with no re-exec. Handy for testing the UI from a shell without going through Hyprland. |
+| `burst help` (`-h`, `--help`) | Prints the usage summary and exits. |
+| `burst --bench-startup` | Times the cold startup path (config load + app init), prints peak RSS, and exits without opening the UI. See [Performance](#performance). |
+
+Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `Enter` to launch the selected app, `Escape` to close.
 
 ## Hyprland Setup
 
@@ -316,6 +374,22 @@ burst peak RSS: ~5 MB
 Both well under the <50ms startup budget and minimal-memory goal.
 
 CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startup.rs` — generous headroom over the ~50ms local goal so shared CI runners don't flake. If the test ever does flake, it will be moved behind `#[ignore]` and run via `cargo test -- --ignored` as an opt-in lane.
+
+## Troubleshooting
+
+**Icons show as tofu squares (□).** The hosting terminal isn't using a Nerd Font. Switch the terminal to a [Nerd Font](https://www.nerdfonts.com/), or set `ui.show_icons = false` to drop icons entirely.
+
+**`burst` exits with "no terminal found".** Bare `burst` couldn't resolve a terminal to host the TUI. Install one of the built-in fallbacks (`alacritty`, `wezterm`, `ghostty`, `kitty`, `foot`, `rio`), set `$TERMINAL`, or add `terminal.preferred` to your config. See [Terminal resolution](#terminal-resolution).
+
+**The launcher opens in the wrong place / isn't fullscreen.** The Hyprland windowrules target the `burst` class. If you changed `terminal.class` in your config, update the `match:class ^(burst)$` rules to match. If you skipped the config entirely, copy [`packaging/hyprland-burst.conf`](packaging/hyprland-burst.conf) as shown in [Hyprland Setup](#hyprland-setup).
+
+**Waybar (or another bar) renders on top of burst.** Waybar is a layer-shell surface on the `top` layer, which a normal floating window can't cover. Set Waybar's config to `"layer": "bottom"` and restart it — details in [Hyprland Setup](#hyprland-setup).
+
+**Background blur / transparency doesn't show.** Burst relies on the host terminal being transparent and Hyprland's `decoration:blur:enabled = true` being set globally. The `opacity 0.9 0.8` windowrule only affects burst's own window.
+
+**`Super+Space` does nothing.** Confirm the bind sources correctly (`bind = SUPER, Space, exec, burst`) and that `burst` is on the `PATH` Hyprland sees. Note the bind runs bare `burst`, **not** `burst tui` — the latter needs an existing controlling terminal.
+
+**My config isn't taking effect.** An invalid config is rejected and burst falls back to built-in defaults, printing the reason to stderr. Run `burst tui` from a shell to see the message, then fix the named field. Common gotchas: `loading_polish` must live under `[ui]` (not `[layout]`), and unknown keys are hard errors. See [Validation](#validation).
 
 ## License
 
