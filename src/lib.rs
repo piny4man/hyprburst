@@ -1,4 +1,5 @@
 pub mod app;
+pub mod bench;
 pub mod config;
 pub mod desktop;
 pub mod effects;

@@ -21,6 +21,7 @@ COMMANDS:
 FLAGS:
     -h, --help           Print this help message
     --bench-startup      Measure config-load + App::new latency and exit
+    --bench              Run the benchmark harness and print the comparison table
 
 With no command, hyprburst re-execs into the user's preferred terminal emulator.
 ";
@@ -45,26 +46,10 @@ fn bench_startup() -> io::Result<()> {
         "hyprburst startup: {:.2}ms",
         elapsed.as_secs_f64() * 1_000.0
     );
-    if let Some(kb) = read_self_rss_kb() {
+    if let Some(kb) = hyprburst::bench::peak_rss_kb() {
         println!("hyprburst peak RSS: {} KB", kb);
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn read_self_rss_kb() -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmHWM:") {
-            return rest.split_whitespace().next().and_then(|n| n.parse().ok());
-        }
-    }
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_self_rss_kb() -> Option<u64> {
-    None
 }
 
 fn run_tui() -> io::Result<()> {
@@ -133,6 +118,11 @@ fn main() -> io::Result<()> {
 
     if args.iter().any(|a| a == "--bench-startup") {
         return bench_startup();
+    }
+
+    if args.iter().any(|a| a == "--bench") {
+        print!("{}", hyprburst::bench::run_baseline_report());
+        return Ok(());
     }
 
     match args.first().map(String::as_str) {

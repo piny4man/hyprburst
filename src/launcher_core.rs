@@ -96,6 +96,27 @@ impl LauncherCore {
         core
     }
 
+    /// Construct from an explicit app set, skipping live discovery and history
+    /// I/O. Used by the benchmark harness and the spike POCs so runs are
+    /// deterministic and comparable across machines. Starts running when `apps`
+    /// is non-empty, mirroring [`new`](Self::new).
+    pub fn from_apps(apps: Vec<DesktopEntry>, config: Config) -> Self {
+        let running = !apps.is_empty();
+        let mut core = Self {
+            apps,
+            query: String::new(),
+            filtered: Vec::new(),
+            selected_index: 0,
+            running,
+            history: None,
+            scores: HashMap::new(),
+            config,
+            columns: 1,
+        };
+        core.rebuild_filtered();
+        core
+    }
+
     /// Whether the launcher is still accepting input.
     pub fn running(&self) -> bool {
         self.running
