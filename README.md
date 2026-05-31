@@ -73,8 +73,6 @@ To build without installing, use `cargo build --release` — the binary lands at
 
 ### From crates.io
 
-> _Available once the first release is published to crates.io._
-
 ```bash
 cargo install hyprburst
 ```
