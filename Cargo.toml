@@ -19,7 +19,7 @@ include = [
     "README.md",
     "SECURITY.md",
     "config.example.toml",
-    "packaging/**",
+    "packaging/hyprburst.conf",
     "src/**",
     "tests/**",
 ]
