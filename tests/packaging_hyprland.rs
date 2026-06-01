@@ -1,14 +1,21 @@
-//! Golden-file test for `packaging/hyprburst.conf`.
+//! Golden-file tests for the shipped Hyprland configs.
 //!
-//! Fails CI if the shipped Hyprland config drifts from the documentation —
-//! every windowrule promised in the README, the `hyprburst` bind, and the
-//! commented `env = TERMINAL,rio` example must all be present. It also checks
-//! that README setup notes document the known Hyprland/Waybar overlay details.
+//! Fails CI if `packaging/hyprburst.conf` (hyprlang) or `packaging/hyprburst.lua`
+//! (Hyprland 0.55+ Lua) drifts from the documentation — every windowrule promised
+//! in the README and the `Super+Space` bind must be present in both formats. It
+//! also checks that README setup notes document the known Hyprland/Waybar overlay
+//! details and both config formats.
 
 use std::path::PathBuf;
 
 fn load_conf() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging/hyprburst.conf");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e))
+}
+
+fn load_lua() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("packaging/hyprburst.lua");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e))
 }
@@ -115,11 +122,49 @@ fn does_not_bind_to_removed_launch_subcommand() {
 }
 
 #[test]
-fn contains_commented_terminal_env_example() {
-    let conf = load_conf();
+fn lua_contains_all_documented_windowrules() {
+    let lua = load_lua();
+    let expected_effects = [
+        "float = true",
+        "size = \"monitor_w monitor_h\"",
+        "move = \"0 0\"",
+        "opacity = \"0.9 0.8\"",
+        "border_size = 0",
+        "no_shadow = true",
+        "stay_focused = true",
+        "dim_around = true",
+    ];
+    for effect in expected_effects {
+        assert!(
+            lua.contains(effect),
+            "hyprburst.lua missing window-rule effect: {effect:?}"
+        );
+    }
+    // Every rule must match the hyprburst app-id.
     assert!(
-        conf.lines()
-            .any(|line| line.trim_start().starts_with('#') && line.contains("env = TERMINAL,rio")),
-        "hyprburst.conf missing commented `env = TERMINAL,rio` example"
+        lua.contains("match = { class = \"hyprburst\" }"),
+        "hyprburst.lua window rules must match the hyprburst app-id"
+    );
+}
+
+#[test]
+fn lua_contains_hyprburst_bind() {
+    let lua = load_lua();
+    assert!(
+        lua.contains("hl.bind(\"SUPER + Space\", hl.dsp.exec_cmd(\"hyprburst\"))"),
+        "hyprburst.lua missing the Super+Space bind via hl.dsp.exec_cmd"
+    );
+}
+
+#[test]
+fn readme_documents_both_config_formats() {
+    let readme = load_readme();
+    assert!(
+        readme.contains("hyprburst.lua"),
+        "README should document the Lua (hyprburst.lua) config for Hyprland 0.55+"
+    );
+    assert!(
+        readme.contains("hyprburst.conf"),
+        "README should document the hyprlang (hyprburst.conf) config"
     );
 }

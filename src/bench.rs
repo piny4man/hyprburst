@@ -1,18 +1,18 @@
-//! Benchmark harness and shared instrumentation contract for the Freya
-//! bake-off.
+//! Benchmark harness and shared instrumentation contract for the launcher.
 //!
 //! The *contract* — an injectable [`Clock`], a deterministic [`synthetic_apps`]
 //! set, a [`scripted_input`] sequence of frontend-agnostic [`LauncherAction`]s,
 //! the [`measure_frames`] driver, [`summarize`], and the [`Footprint`] probes —
-//! is variant-agnostic: it operates purely on [`LauncherCore`] and produces a
-//! [`Metrics`] record. Each frontend (baseline TUI here; the Freya POCs in later
-//! phases) plugs in its own paint closure. Output is a single diffable
-//! comparison table ([`render_table`]) plus a machine-readable record
-//! ([`to_json`]), one column per variant.
+//! is frontend-agnostic: it operates purely on [`LauncherCore`] and produces a
+//! [`Metrics`] record. Each frontend plugs in its own paint closure. Output is a
+//! single diffable comparison table ([`render_table`]) plus a machine-readable
+//! record ([`to_json`]), one column per variant.
 //!
-//! The baseline TUI column is populated by [`run_baseline`], which paints frames
-//! headlessly into a ratatui [`Buffer`] via the shipped [`render_core`] path —
-//! no terminal required, so it runs in the default build with no Freya feature.
+//! Two columns are populated headlessly (no window): [`run_baseline`] (the
+//! crossterm `tui` path) and [`run_gui`] (the windowed launcher's per-frame CPU
+//! work via [`crate::gui::GuiModel`]). Both paint frames into a ratatui
+//! [`Buffer`] via the shipped [`render_core`] path, so they run anywhere; the
+//! GUI's real GPU cost (cold-start, fps) comes from the live `--measure` run.
 
 use std::time::Instant;
 
@@ -241,9 +241,8 @@ pub fn live_footprint() -> Footprint {
 }
 
 /// Probe live footprint, attributing the dep count to the build selected by
-/// the given extra cargo `features`. The Freya POCs pass `["freya-spike"]` so
-/// their column reflects the Freya/Skia maintenance surface rather than the
-/// Freya-free default build.
+/// the given extra cargo `features`. The default build passes no features; the
+/// parameter is retained for forward use if optional feature columns return.
 pub fn live_footprint_for(features: &[&str]) -> Footprint {
     Footprint {
         peak_rss_kb: peak_rss_kb(),
@@ -273,10 +272,7 @@ fn binary_size_bytes() -> Option<u64> {
 }
 
 /// Count the dependencies actually pulled into the build for the given extra
-/// cargo `features`, via `cargo tree`. This is per-variant: the default
-/// (Freya-free) build resolves far fewer crates than `freya-spike`, so each
-/// column reports its own real maintenance surface rather than the lockfile
-/// union — which includes every optional dependency regardless of variant.
+/// cargo `features`, via `cargo tree`. The default build passes no features.
 /// Falls back to the `Cargo.lock` package count when `cargo` is unavailable
 /// (e.g. a shipped binary on a machine with no toolchain).
 pub fn dep_count_for(features: &[&str]) -> Option<u32> {
@@ -355,232 +351,35 @@ pub fn run_baseline_report() -> String {
     format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
 }
 
-/// Run the native-GUI POC variant against the contract and produce its
+/// Run the windowed launcher (`gui`) against the contract and produce its
 /// [`Metrics`] column.
 ///
-/// Paints headlessly by calling [`crate::gui::build_frame`] — the per-frame CPU
-/// work the live window does before handing nodes to Skia — exactly as
-/// [`run_baseline`] paints via `render_core`. GPU compositing is excluded from
-/// both columns, so the input-latency/fps/jank figures compare like for like;
-/// the live window's real cold-start and peak RSS come from the
-/// `hyprburst-spike-gui` binary's own report. Warm-toggle stays `N/A`: like the
-/// baseline TUI, this POC spawns per launch and keeps no resident window to
-/// hide/show (a resident-window variant would be a migration follow-up).
-#[cfg(feature = "freya-spike")]
-pub fn run_native_gui() -> Metrics {
+/// Paints headlessly via [`crate::gui::GuiModel`]: render the launcher with
+/// `render_core` (identical to the baseline — the window paints the same TUI),
+/// snapshot the resulting ratatui buffer, dirty-diff it, and atlas-key the
+/// changes — the windowless renderer work the live GL window does before glyph
+/// rasterization and the GPU draw. There is **no emulator parse**: owning the
+/// surface natively removes the VT round-trip, so this column sits just above the
+/// baseline. GPU upload/draw is excluded, as GPU compositing is from every
+/// column. Warm-toggle stays `N/A`: the launcher spawns per launch. The live
+/// cold-start and peak RSS come from `hyprburst --measure`.
+pub fn run_gui() -> Metrics {
     let clock = MonotonicClock::new();
-    let config = Config::default();
-    let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
-    core.set_columns(crate::gui::columns_for(&config));
-    let input = scripted_input();
-
-    let raw = measure_frames(&clock, &mut core, &input, |c| {
-        let view = c.view();
-        let frame = crate::gui::build_frame(&view, &config);
-        std::hint::black_box(&frame);
-    });
-
-    let mut metrics = summarize(&raw, "native-gui", live_footprint_for(&["freya-spike"]));
-    // Phase 7: native-GUI is the *resident* variant, so it fills the warm-toggle
-    // row the spawn-per-launch columns leave N/A — modelled headlessly as the CPU
-    // cost of resetting a used launcher and rebuilding its first frame on re-show.
-    let warm_clock = MonotonicClock::new();
-    let mut warm_core = LauncherCore::from_apps(synthetic_apps(), config.clone());
-    warm_core.set_columns(crate::gui::columns_for(&config));
-    metrics.warm_toggle_ns = Some(measure_warm_toggle(&warm_clock, &mut warm_core, &config));
-    metrics
-}
-
-/// Measure a resident variant's warm-toggle repaint cost: the CPU work to reset a
-/// *used* launcher (query typed, selection moved, then stopped) back to its fresh
-/// state and repaint once. This is the headless analog of hide→show→painted, minus
-/// process startup (the resident window is already realized) and GPU compositing
-/// (excluded from every column) — so it isolates exactly the per-toggle CPU work
-/// [`crate::launcher_core::LauncherCore::reset`] plus the variant's `paint` do on
-/// re-show. The caller supplies how a frame is painted, so every resident variant
-/// shares this skeleton. `Cancel` (not `LaunchSelected`) stops the core without
-/// dispatching `hyprctl` — the model must never spawn a process. Reads `clock`
-/// exactly twice, so it's deterministic under a scripted fake clock.
-#[cfg(any(feature = "freya-spike", feature = "glterm-spike"))]
-pub fn warm_toggle_span(
-    clock: &dyn Clock,
-    core: &mut LauncherCore,
-    mut paint: impl FnMut(&mut LauncherCore),
-) -> u64 {
-    core.apply(LauncherAction::Insert('f'));
-    core.apply(LauncherAction::MoveDown);
-    core.apply(LauncherAction::Cancel);
-
-    let before = clock.now_nanos();
-    core.reset();
-    paint(core);
-    clock.now_nanos().saturating_sub(before)
-}
-
-/// The native-GUI variant's warm toggle: [`warm_toggle_span`] with the GUI's pure
-/// [`crate::gui::build_frame`] as the repaint.
-#[cfg(feature = "freya-spike")]
-pub fn measure_warm_toggle(clock: &dyn Clock, core: &mut LauncherCore, config: &Config) -> u64 {
-    warm_toggle_span(clock, core, |c| {
-        let view = c.view();
-        let frame = crate::gui::build_frame(&view, config);
-        std::hint::black_box(&frame);
-    })
-}
-
-/// Run the native-GUI POC's *themed-icon* variant (Phase 6 measured bonus) and
-/// produce its [`Metrics`] column.
-///
-/// Paints headlessly via [`crate::gui_icons::IconRenderModel`]: each frame builds
-/// the same glyph frame the [`run_native_gui`] column does (the shared base work)
-/// **and** decodes any newly-visible entry's icon once into a cache. So the
-/// input-latency/fps/jank figures capture the themed path's added per-frame
-/// decode on cache misses — cold start plus typing that reveals not-yet-seen apps
-/// — over the glyph baseline, while GPU upload/compositing stays excluded, as in
-/// every other column. The synthetic icons are deterministic PNGs, so the column
-/// is comparable across machines; the live process-RSS delta comes from the
-/// binary's own `--measure` report under `HYPRBURST_GUI_ICONS=themed`.
-#[cfg(feature = "freya-spike")]
-pub fn run_native_gui_icons() -> Metrics {
-    let clock = MonotonicClock::new();
-    let config = Config::default();
-    let apps = synthetic_apps();
-    // Build the icon model from a borrow first, then move `apps` into the core
-    // (`DesktopEntry` isn't `Clone`, and we don't want to change the default
-    // build to make it so).
-    let mut model = crate::gui_icons::IconRenderModel::new(config.clone(), &apps);
-    let mut core = LauncherCore::from_apps(apps, config.clone());
-    core.set_columns(crate::gui::columns_for(&config));
+    let area = Rect::new(0, 0, 80, 40);
+    let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
+    let mut model = crate::gui::GuiModel::new(area);
     let input = scripted_input();
 
     let raw = measure_frames(&clock, &mut core, &input, |c| model.paint(c));
 
-    summarize(
-        &raw,
-        "native-gui-icons",
-        live_footprint_for(&["freya-spike"]),
-    )
+    summarize(&raw, "gui", live_footprint())
 }
 
-/// Render the Phase 6 icon delta: the native-GUI glyph column beside the
-/// themed-icon column, plus a one-line viability read (per-frame latency delta,
-/// number of distinct icons decoded, and the retained texture memory). This is
-/// the non-gating bonus measurement — it answers "are images fast enough now?"
-/// with numbers without touching the main bake-off verdict table.
-#[cfg(feature = "freya-spike")]
-pub fn run_icon_delta_report() -> String {
-    let glyph = run_native_gui();
-    let icons = run_native_gui_icons();
-
-    // Steady-state cache: decode every distinct icon once and total its memory.
-    let apps = synthetic_apps();
-    let mut model = crate::gui_icons::IconRenderModel::new(Config::default(), &apps);
-    model.decode_all();
-    let decoded = model.decoded_count();
-    let cache_kb = model.cache_bytes() as f64 / 1024.0;
-
-    let table = render_table(&[glyph.clone(), icons.clone()]);
-    let delta_ns = icons.input_latency_ns as i64 - glyph.input_latency_ns as i64;
-    let delta_ms = delta_ns as f64 / 1_000_000.0;
-    let viability = format!(
-        "icon delta: input latency {:+.3} ms vs glyph; {} icons decoded, {:.1} KB resident; jank {} (glyph {})",
-        delta_ms, decoded, cache_kb, icons.jank_count, glyph.jank_count,
-    );
-
-    format!(
-        "{}\n\n{}\n\n{}\n",
-        table,
-        viability,
-        to_json(&[glyph, icons])
-    )
-}
-
-/// Run the embedded-terminal POC variant against the contract and produce its
-/// [`Metrics`] column.
-///
-/// Paints headlessly via [`crate::term_host::ParseModel`]: each frame renders
-/// the launcher with `render_core` (identical to the baseline — the embedded
-/// variant hosts the *unmodified* TUI), serializes the diff to the VT bytes the
-/// PTY would carry, and advances an `alacritty_terminal` grid with them. So the
-/// input-latency/fps/jank figures capture inner render **plus** the emulator
-/// surcharge Freya's terminal host adds — the cost that distinguishes this
-/// variant — while GPU compositing stays excluded, as in the other columns. The
-/// live window's real cold-start and peak RSS come from the
-/// `hyprburst-spike-term` binary's own report on first paint. Warm-toggle stays
-/// `N/A`: like the other variants, the POC spawns per launch with no resident
-/// window to hide/show.
-#[cfg(feature = "freya-spike")]
-pub fn run_embedded_term() -> Metrics {
-    let clock = MonotonicClock::new();
-    let area = Rect::new(0, 0, 80, 40);
-    let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
-    let mut host = crate::term_host::ParseModel::new(area);
-    let input = scripted_input();
-
-    let raw = measure_frames(&clock, &mut core, &input, |c| host.paint(c));
-
-    summarize(&raw, "embedded-term", live_footprint_for(&["freya-spike"]))
-}
-
-/// Run the slim gl-term POC variant against the contract and produce its
-/// [`Metrics`] column.
-///
-/// Paints headlessly via [`crate::glterm::GlTermModel`]: the embedded-terminal
-/// parse cost (this variant hosts the same `hyprburst tui` in a PTY) **plus** the
-/// hand-written renderer's windowless work — grid snapshot, dirty-region diff, and
-/// glyph-atlas keying — that the Freya variants got from Skia for free. GPU
-/// upload/draw stays excluded, as in every column. The dep count is attributed to
-/// the `glterm-spike` feature, so the column reflects the slim winit/glutin/glow/
-/// PTY stack *without* Skia — the gate-5 contrast that is this variant's whole
-/// point. Warm-toggle is filled: gl-term is resident (the host window stays
-/// mapped; only the inner TUI re-runs per show), so it reports the re-show repaint
-/// cost like the native-GUI variant. The live window's real cold-start and peak
-/// RSS come from the `hyprburst-spike-glterm` binary's own report on first paint.
-#[cfg(feature = "glterm-spike")]
-pub fn run_gl_term() -> Metrics {
-    let clock = MonotonicClock::new();
-    let area = Rect::new(0, 0, 80, 40);
-    let config = Config::default();
-    let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
-    let mut host = crate::glterm::GlTermModel::new(area);
-    let input = scripted_input();
-
-    let raw = measure_frames(&clock, &mut core, &input, |c| host.paint(c));
-
-    let mut metrics = summarize(&raw, "gl-term", live_footprint_for(&["glterm-spike"]));
-    // Resident variant: fill the warm-toggle row with the re-show repaint cost,
-    // modelled the same way as native-GUI (reset + one repaint through the host).
-    let warm_clock = MonotonicClock::new();
-    let mut warm_core = LauncherCore::from_apps(synthetic_apps(), config);
-    let mut warm_host = crate::glterm::GlTermModel::new(area);
-    metrics.warm_toggle_ns = Some(warm_toggle_span(&warm_clock, &mut warm_core, |c| {
-        warm_host.paint(c)
-    }));
-    metrics
-}
-
-/// Render the gl-term column beside the baseline — the report the
-/// `hyprburst-spike-glterm` binary prints under `--bench` in a Skia-free build
-/// (the Freya columns need the Freya feature). With `--all-features`, the full
-/// four-column bake-off comes from [`run_bake_off_report`].
-#[cfg(feature = "glterm-spike")]
-pub fn run_gl_term_report() -> String {
-    let metrics = [run_baseline(), run_gl_term()];
-    format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
-}
-
-/// Render the head-to-head bake-off table with all four columns — baseline TUI,
-/// native-GUI POC, Freya embedded-terminal POC, and slim gl-term POC — side by
-/// side, plus the machine-readable record. Available only with the `freya-spike`
-/// feature, which builds every variant (`freya-spike` turns on `glterm-spike`).
-#[cfg(feature = "freya-spike")]
+/// Render the comparison table: the baseline (crossterm `tui`) column and the
+/// windowed `gui` column side by side, with the machine-readable record.
+/// `hyprburst --bench` prints this.
 pub fn run_bake_off_report() -> String {
-    let metrics = [
-        run_baseline(),
-        run_native_gui(),
-        run_embedded_term(),
-        run_gl_term(),
-    ];
+    let metrics = [run_baseline(), run_gui()];
     format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
 }
 
@@ -869,9 +668,9 @@ ratatui v0.30.0
             binary_size_bytes: Some(120_000_000),
             dep_count: Some(375),
         };
-        let m = probe_metrics("freya-window-probe", 9_000_000, footprint);
+        let m = probe_metrics("glui-window-probe", 9_000_000, footprint);
 
-        assert_eq!(m.variant, "freya-window-probe");
+        assert_eq!(m.variant, "glui-window-probe");
         assert_eq!(m.cold_start_ns, 9_000_000);
         assert_eq!(m.footprint, footprint);
         // Bare window: no input loop, so these stay unmeasured.
@@ -926,133 +725,44 @@ ratatui v0.30.0
         assert_eq!(json, expected);
     }
 
-    #[cfg(feature = "freya-spike")]
     #[test]
-    fn native_gui_paint_closure_brackets_each_frame() {
-        // The native-GUI frame-timing hook: driving the core through
-        // `measure_frames` with the GUI's `build_frame` paint closure must
-        // bracket cold start and every scripted frame just like the baseline,
-        // so the harness times real per-frame work deterministically.
-        let config = Config::default();
-        let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
-        core.set_columns(crate::gui::columns_for(&config));
+    fn gui_paint_closure_brackets_each_frame() {
+        // The window's frame-timing hook: driving the core through
+        // `measure_frames` with the GuiModel paint closure must bracket cold
+        // start and every scripted frame just like the baseline, so the harness
+        // times real per-frame work deterministically.
+        let area = Rect::new(0, 0, 80, 40);
+        let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
+        let mut model = crate::gui::GuiModel::new(area);
         let input = vec![LauncherAction::Insert('a'), LauncherAction::MoveDown];
         // Reads: t0, t1 (cold), then before/after for each of 2 frames.
         let clock = FakeClock::new(vec![0, 100, 200, 350, 400, 600]);
 
-        let raw = measure_frames(&clock, &mut core, &input, |c| {
-            let view = c.view();
-            let frame = crate::gui::build_frame(&view, &config);
-            std::hint::black_box(&frame);
-        });
+        let raw = measure_frames(&clock, &mut core, &input, |c| model.paint(c));
 
         assert_eq!(raw.cold_start_ns, 100);
         assert_eq!(raw.frame_ns, vec![150, 200]);
     }
 
-    #[cfg(feature = "freya-spike")]
     #[test]
-    fn run_native_gui_populates_latency_and_footprint() {
-        let m = run_native_gui();
-        assert_eq!(m.variant, "native-gui");
+    fn run_gui_populates_latency_and_footprint() {
+        let m = run_gui();
+        assert_eq!(m.variant, "gui");
         assert!(m.cold_start_ns > 0);
         assert!(m.input_latency_ns > 0);
         assert!(m.fps > 0.0);
         assert!(m.footprint.peak_rss_kb.is_some());
         assert!(m.footprint.binary_size_bytes.is_some());
         assert!(m.footprint.dep_count.is_some());
-        // Phase 7: the resident native-GUI variant fills the warm-toggle row.
-        assert!(
-            m.warm_toggle_ns.is_some_and(|ns| ns > 0),
-            "resident native-GUI must report a warm-toggle latency",
-        );
-    }
-
-    #[cfg(feature = "freya-spike")]
-    #[test]
-    fn measure_warm_toggle_times_reset_and_repaint_deterministically() {
-        let config = Config::default();
-        let mut core = LauncherCore::from_apps(synthetic_apps(), config.clone());
-        core.set_columns(crate::gui::columns_for(&config));
-        // Two readings bracket the reset+repaint: 1_000 → 1_500.
-        let clock = FakeClock::new(vec![1_000, 1_500]);
-
-        let ns = measure_warm_toggle(&clock, &mut core, &config);
-
-        assert_eq!(ns, 500, "warm toggle is the bracketed reset+repaint span");
-        assert!(
-            core.running(),
-            "reset resumed the core for the next session"
-        );
-        assert_eq!(core.view().query, "", "reset cleared the used query");
-    }
-
-    #[cfg(feature = "freya-spike")]
-    #[test]
-    fn run_native_gui_icons_populates_latency_and_footprint() {
-        let m = run_native_gui_icons();
-        assert_eq!(m.variant, "native-gui-icons");
-        assert!(m.cold_start_ns > 0);
-        assert!(m.input_latency_ns > 0);
-        assert!(m.fps > 0.0);
-        assert!(m.footprint.peak_rss_kb.is_some());
-        assert!(m.footprint.binary_size_bytes.is_some());
-        assert!(m.footprint.dep_count.is_some());
-        // Spawn-per-launch POC: no resident window to toggle.
+        // Spawn-per-launch: no resident window to toggle.
         assert_eq!(m.warm_toggle_ns, None);
     }
 
-    #[cfg(feature = "freya-spike")]
     #[test]
-    fn run_icon_delta_report_shows_both_columns_and_viability() {
-        let report = run_icon_delta_report();
-        assert!(report.contains("native-gui"));
-        assert!(report.contains("native-gui-icons"));
-        assert!(report.contains("icon delta:"));
-        // 24 synthetic apps map to distinct icon names, each a 48×48 RGBA icon.
-        assert!(report.contains("icons decoded"));
-    }
-
-    #[cfg(feature = "freya-spike")]
-    #[test]
-    fn run_embedded_term_populates_latency_and_footprint() {
-        let m = run_embedded_term();
-        assert_eq!(m.variant, "embedded-term");
-        assert!(m.cold_start_ns > 0);
-        assert!(m.input_latency_ns > 0);
-        assert!(m.fps > 0.0);
-        assert!(m.footprint.peak_rss_kb.is_some());
-        assert!(m.footprint.binary_size_bytes.is_some());
-        assert!(m.footprint.dep_count.is_some());
-        // Spawn-per-launch POC: no resident window to toggle.
-        assert_eq!(m.warm_toggle_ns, None);
-    }
-
-    #[cfg(feature = "glterm-spike")]
-    #[test]
-    fn run_gl_term_populates_latency_footprint_and_warm_toggle() {
-        let m = run_gl_term();
-        assert_eq!(m.variant, "gl-term");
-        assert!(m.cold_start_ns > 0);
-        assert!(m.input_latency_ns > 0);
-        assert!(m.fps > 0.0);
-        assert!(m.footprint.peak_rss_kb.is_some());
-        assert!(m.footprint.binary_size_bytes.is_some());
-        assert!(m.footprint.dep_count.is_some());
-        // Resident variant: the host window stays mapped, so warm-toggle is filled.
-        assert!(
-            m.warm_toggle_ns.is_some_and(|ns| ns > 0),
-            "resident gl-term must report a warm-toggle latency",
-        );
-    }
-
-    #[cfg(feature = "glterm-spike")]
-    #[test]
-    fn run_gl_term_report_shows_baseline_and_gl_term() {
-        let report = run_gl_term_report();
+    fn run_bake_off_report_includes_baseline_and_gui() {
+        let report = run_bake_off_report();
         assert!(report.contains("baseline-tui"));
-        assert!(report.contains("gl-term"));
-        assert!(report.contains("warm toggle"));
+        assert!(report.contains("gui"));
     }
 
     #[test]

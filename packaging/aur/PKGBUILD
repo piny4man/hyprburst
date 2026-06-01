@@ -1,9 +1,9 @@
 # Maintainer: piny4man <development@pinya.dev>
 
 pkgname=hyprburst
-pkgver=0.4.3
+pkgver=0.5.0
 pkgrel=1
-pkgdesc="Fast fullscreen terminal application launcher for Arch Linux and Hyprland"
+pkgdesc="Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland"
 arch=('x86_64')
 url="https://github.com/piny4man/hyprburst"
 license=('GPL-3.0-or-later')
@@ -11,8 +11,8 @@ depends=('gcc-libs' 'glibc')
 makedepends=('cargo')
 optdepends=(
   'hyprland: window-manager integration for the full-monitor overlay'
-  'foot: terminal emulator to host the launcher TUI (any of alacritty/wezterm/ghostty/kitty/foot/rio works)'
   'ttf-nerd-fonts-symbols: Nerd Font glyphs for entry icons (any Nerd Font works)'
+  'foot: terminal emulator for the `hyprburst tui` fallback (any of alacritty/wezterm/ghostty/kitty/foot/rio works)'
 )
 options=('!lto')
 source=("$pkgname-$pkgver.crate::https://static.crates.io/crates/$pkgname/$pkgname-$pkgver.crate")
@@ -45,9 +45,12 @@ package() {
   cd "$pkgname-$pkgver"
   install -Dm0755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
 
-  # Drop-in Hyprland overlay config (source it from ~/.config/hypr/hyprland.conf).
+  # Drop-in Hyprland overlay config — both formats, since hyprland.lua and
+  # hyprland.conf are mutually exclusive (Hyprland loads one or the other).
   install -Dm0644 "packaging/hyprburst.conf" \
     "$pkgdir/usr/share/hyprburst/hyprburst.conf"
+  install -Dm0644 "packaging/hyprburst.lua" \
+    "$pkgdir/usr/share/hyprburst/hyprburst.lua"
   # Annotated example config for ~/.config/hyprburst/config.toml.
   install -Dm0644 "config.example.toml" \
     "$pkgdir/usr/share/hyprburst/config.example.toml"

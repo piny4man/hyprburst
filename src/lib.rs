@@ -3,12 +3,8 @@ pub mod bench;
 pub mod config;
 pub mod desktop;
 pub mod effects;
-#[cfg(feature = "glterm-spike")]
-pub mod glterm;
-#[cfg(feature = "freya-spike")]
+pub mod font;
 pub mod gui;
-#[cfg(feature = "freya-spike")]
-pub mod gui_icons;
 pub mod history;
 pub mod hyprland;
 pub mod icon;
@@ -17,9 +13,5 @@ pub mod launcher;
 pub mod launcher_core;
 pub mod layout;
 pub mod search;
-#[cfg(any(feature = "freya-spike", feature = "glterm-spike"))]
-pub mod spike_metrics;
-#[cfg(any(feature = "freya-spike", feature = "glterm-spike"))]
-pub mod term_host;
 pub mod terminal;
-pub mod terminal_resolver;
+pub mod window;

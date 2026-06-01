@@ -1,8 +1,8 @@
 [package]
 name = "hyprburst"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
-description = "Fast fullscreen terminal application launcher for Arch Linux and Hyprland"
+description = "Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/piny4man/hyprburst"
 readme = "README.md"
@@ -20,119 +20,31 @@ include = [
     "SECURITY.md",
     "config.example.toml",
     "packaging/hyprburst.conf",
+    "packaging/hyprburst.lua",
     "src/**",
     "tests/**",
 ]
 
 [dependencies]
 ratatui = "0.30"
+# crossterm backs the `hyprburst tui` fallback (inline launcher for SSH / no-GPU).
 crossterm = "0.29"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tachyonfx = "0.25"
 
-# Freya bake-off spike (experiment branch only). Gated behind the optional
-# `freya-spike` feature so the default build, shipped binary, CI, and crates.io
-# packaging stay byte-for-byte unaffected — Freya and its Skia/PTY stack are
-# compiled only when the feature is explicitly enabled. The `terminal` feature
-# pulls Freya's PTY-backed terminal component (`freya-terminal`), which the
-# Phase 5 embedded-terminal POC hosts; `winit` (default) backs the window.
-freya = { version = "0.4.0-rc.21", optional = true, features = ["terminal"] }
-# Same Skia/PTY spike. `alacritty_terminal` is already pulled transitively by
-# `freya-terminal`; depending on it directly (still optional, still gated) lets
-# the Phase 5 harness model the embedded-terminal frame cost headlessly — parse
-# the launcher's rendered VT bytes through the same emulator Freya hosts —
-# without growing the `Cargo.lock` union or touching the default build.
-alacritty_terminal = { version = "0.26", optional = true }
-# Same Skia spike. The `image` crate is already pulled transitively by Freya's
-# Skia/asset stack; depending on it directly (still optional, still gated) lets
-# the Phase 6 harness model the themed-icon path's decode cost headlessly —
-# decode real PNG bytes to RGBA, the work Freya's `ImageViewer` does on Skia —
-# without growing the `Cargo.lock` union or touching the default build. Only the
-# PNG codec is needed for the synthetic benchmark icons.
-image = { version = "0.25", optional = true, default-features = false, features = [
-    "png",
-] }
-# Same Skia spike. `freya-winit` is the windowing backend Freya already pulls;
-# depending on it directly (still optional, still gated) gives access to its
-# plugin API so the POCs can stamp an *honest* cold-start at the first real frame
-# present (`AfterPresenting`) instead of the first component render, which fires
-# well before Skia paints and the compositor shows the window. Zero new packages.
-freya-winit = { version = "0.4.0-rc.21", optional = true }
-# Same Skia spike. `signal-hook` is already pulled transitively by the Freya
-# stack; depending on it directly (still optional, still gated) lets the Phase 7
-# resident POC arm a warm-toggle measurement on `SIGUSR1` — the unattended toggle
-# driver and a stack-agnostic manual fallback — with safe, synchronous signal
-# delivery on a dedicated thread. Zero new packages in the `Cargo.lock` union.
-signal-hook = { version = "0.3", optional = true }
-
-# Phase 7 deliverable 2: the slim gl-term variant (`hyprburst-spike-glterm`) — a
-# resident terminal host built *without* Freya/Skia, to measure owning the surface
-# and feeling instant against Skia's 278-crate tree (gate 5). winit, glutin,
-# glutin-winit, ab_glyph, and raw-window-handle are *already* pulled transitively
-# by the Freya stack, so they add nothing to the `Cargo.lock` union; `glow` (a thin
-# GL function-pointer loader, no transitive deps of its own) is the only new crate.
-# All optional and gated behind `glterm-spike`, so the default build, shipped
-# binary, and crates.io packaging stay byte-for-byte unaffected.
-winit = { version = "0.30", optional = true }
-glutin = { version = "0.32", optional = true }
-glutin-winit = { version = "0.5", optional = true }
-glow = { version = "0.16", optional = true }
-ab_glyph = { version = "0.2", optional = true }
-raw-window-handle = { version = "0.6", optional = true }
-
-[features]
-# Off by default. Enables the Freya POC binaries and their dependency stack.
-# Also turns on `glterm-spike` so a single `--features freya-spike` build still
-# produces every spike binary, including the Skia-free gl-term host.
-freya-spike = [
-    "dep:freya",
-    "dep:alacritty_terminal",
-    "dep:image",
-    "dep:freya-winit",
-    "dep:signal-hook",
-    "glterm-spike",
-]
-
-# Phase 7 slim gl-term host. Pulls the winit + glutin/glow + ab_glyph + PTY stack
-# (no Freya/Skia), so its `cargo tree` dep count is the gate-5 "without Skia"
-# contrast. `alacritty_terminal` (PTY + VT parser) and `signal-hook` (resident
-# warm-toggle trigger) are shared with the Freya variants but still optional.
-glterm-spike = [
-    "dep:winit",
-    "dep:glutin",
-    "dep:glutin-winit",
-    "dep:glow",
-    "dep:ab_glyph",
-    "dep:raw-window-handle",
-    "dep:alacritty_terminal",
-    "dep:signal-hook",
-]
-
-# Thin Phase 3 viability probe — grows into the real native-GUI POC in Phase 4.
-# Gated so it is never built (and Freya is never pulled) without the feature.
-[[bin]]
-name = "hyprburst-spike-gui"
-path = "src/bin/hyprburst-spike-gui.rs"
-required-features = ["freya-spike"]
-
-# Phase 5 embedded-terminal POC: a Freya window hosting a PTY that runs
-# `hyprburst tui`. Same feature gate, so neither the default build nor crates.io
-# packaging ever pulls Freya for it.
-[[bin]]
-name = "hyprburst-spike-term"
-path = "src/bin/hyprburst-spike-term.rs"
-required-features = ["freya-spike"]
-
-# Phase 7 deliverable 2: the slim gl-term host. Gated behind `glterm-spike` (which
-# `freya-spike` turns on), so `--features freya-spike` builds it alongside the
-# Freya POCs, *and* `--features glterm-spike` builds it standalone without pulling
-# Freya/Skia — the build that yields the gate-5 "without Skia" dep count.
-[[bin]]
-name = "hyprburst-spike-glterm"
-path = "src/bin/hyprburst-spike-glterm.rs"
-required-features = ["glterm-spike"]
+# The windowed launcher owns its own Wayland surface and paints the ratatui
+# `Buffer` from `render_core` directly through a hand-written GL cell renderer —
+# no Skia, no terminal-emulator round-trip, no PTY. winit drives the event loop;
+# glutin/glutin-winit create the GL context/surface; glow is the GL binding;
+# ab_glyph rasterizes glyphs; raw-window-handle bridges winit ↔ glutin.
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+glow = "0.16"
+ab_glyph = "0.2"
+raw-window-handle = "0.6"
 
 [profile.release]
 opt-level = 3
