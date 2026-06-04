@@ -1,70 +1,16 @@
-//! Thin ratatui frontend for the launcher.
+//! Shared launcher rendering: paint a [`LauncherCore`] into a ratatui buffer.
 //!
-//! All state and behavior live in [`LauncherCore`]; this module only maps
-//! crossterm `KeyCode`s to [`LauncherAction`]s and renders the core's
-//! [`LauncherView`](crate::launcher_core::LauncherView) projection.
+//! Factored out of the TUI [`Widget`](ratatui::widgets::Widget) impl so the GPU
+//! window and the benchmark probes paint frames through the exact same path the
+//! shipped TUI uses. Pushes the layout's column count into the core before
+//! projecting its view, so grid navigation stays consistent with what was drawn.
 
-use ratatui::crossterm::event::KeyCode;
 use ratatui::prelude::*;
 
-use crate::config::Config;
-use crate::launcher_core::{EmptyReason, LauncherAction, LauncherCore};
-use crate::layout::{self, LayoutRects};
-
-pub struct Launcher {
-    core: LauncherCore,
-}
-
-impl Launcher {
-    pub fn new(config: Config) -> Self {
-        Self {
-            core: LauncherCore::new(config),
-        }
-    }
-
-    pub fn running(&self) -> bool {
-        self.core.running()
-    }
-
-    pub fn handle_key(&mut self, code: KeyCode) {
-        if let Some(action) = key_to_action(code) {
-            self.core.apply(action);
-        }
-    }
-}
-
-/// Translate a crossterm key into an abstract [`LauncherAction`]. Keys with no
-/// launcher meaning return `None`.
-fn key_to_action(code: KeyCode) -> Option<LauncherAction> {
-    Some(match code {
-        KeyCode::Esc => LauncherAction::Cancel,
-        KeyCode::Tab => LauncherAction::Autocomplete,
-        KeyCode::PageUp => LauncherAction::PageUp,
-        KeyCode::PageDown => LauncherAction::PageDown,
-        KeyCode::Up => LauncherAction::MoveUp,
-        KeyCode::Down => LauncherAction::MoveDown,
-        KeyCode::Left => LauncherAction::MoveLeft,
-        KeyCode::Right => LauncherAction::MoveRight,
-        KeyCode::Enter => LauncherAction::LaunchSelected,
-        KeyCode::Backspace => LauncherAction::Backspace,
-        KeyCode::Char(c) => LauncherAction::Insert(c),
-        _ => return None,
-    })
-}
-
-impl Widget for &mut Launcher {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        render_core(&mut self.core, area, buf);
-    }
-}
+use crate::domain::launcher_core::{EmptyReason, LauncherCore};
+use crate::view::layout::{self, LayoutRects};
 
 /// Render a [`LauncherCore`] into a ratatui buffer.
-///
-/// Factored out of the [`Widget`] impl so the benchmark harness can paint
-/// baseline frames headlessly (no terminal) while sharing the exact rendering
-/// path the shipped TUI uses. Pushes the layout's column count into the core
-/// before projecting its view, so grid navigation stays consistent with what
-/// was drawn.
 pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
     let LayoutRects {
         banner: banner_area,
@@ -161,6 +107,7 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
         let style = if selected {
             Style::new()
                 .fg(config.colors.selected)
+                .bg(config.colors.selected_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::new()
@@ -171,11 +118,16 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
         } else {
             format!("{}{}", prefix, entry.name)
         };
-        if columns > 1 {
-            let cell_width = col_width as usize;
-            let line_width = line.chars().count();
-            if line_width > cell_width {
-                line = line.chars().take(cell_width).collect();
+        let cell_width = col_width as usize;
+        if columns > 1 && line.chars().count() > cell_width {
+            line = line.chars().take(cell_width).collect();
+        }
+        // Pad the selected row to the full cell width so its highlight bar spans
+        // the row (the background style fills the trailing spaces too).
+        if selected {
+            let w = line.chars().count();
+            if w < cell_width {
+                line.push_str(&" ".repeat(cell_width - w));
             }
         }
         buf.set_string(cell_x, cell_y, &line, style);
@@ -185,20 +137,17 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::UiConfig;
-    use crate::desktop::DesktopEntry;
-    use crate::launcher_core::LauncherCore;
+    use crate::domain::config::{Config, UiConfig};
+    use crate::domain::desktop::DesktopEntry;
 
-    fn launcher_with_single_app(config: Config) -> Launcher {
+    fn core_with_single_app(config: Config) -> LauncherCore {
         let app = DesktopEntry {
             id: "firefox".into(),
             name: "Firefox".into(),
             icon: "firefox".into(),
             exec: "firefox".into(),
         };
-        Launcher {
-            core: LauncherCore::for_test(vec![app], config),
-        }
+        LauncherCore::for_test(vec![app], config)
     }
 
     fn row_at(buf: &Buffer, y: u16, area: Rect) -> String {
@@ -216,10 +165,10 @@ mod tests {
             },
             ..Config::default()
         };
-        let mut launcher = launcher_with_single_app(cfg);
+        let mut core = core_with_single_app(cfg);
         let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
-        (&mut launcher).render(area, &mut buf);
+        render_core(&mut core, area, &mut buf);
 
         let row = row_at(&buf, 3, area);
         assert!(
@@ -239,11 +188,11 @@ mod tests {
             },
             ..Config::default()
         };
-        let mut launcher = launcher_with_single_app(cfg);
+        let mut core = core_with_single_app(cfg);
 
         let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
-        (&mut launcher).render(area, &mut buf);
+        render_core(&mut core, area, &mut buf);
 
         let row = row_at(&buf, 3, area);
         assert!(
@@ -263,11 +212,11 @@ mod tests {
             },
             ..Config::default()
         };
-        let mut launcher = launcher_with_single_app(cfg);
+        let mut core = core_with_single_app(cfg);
 
         let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
-        (&mut launcher).render(area, &mut buf);
+        render_core(&mut core, area, &mut buf);
 
         let row = row_at(&buf, 3, area);
         assert!(
@@ -287,11 +236,11 @@ mod tests {
             },
             ..Config::default()
         };
-        let mut launcher = launcher_with_single_app(cfg);
+        let mut core = core_with_single_app(cfg);
 
         let area = Rect::new(0, 0, 40, 5);
         let mut buf = Buffer::empty(area);
-        (&mut launcher).render(area, &mut buf);
+        render_core(&mut core, area, &mut buf);
 
         let row = row_at(&buf, 2, area);
         assert!(
@@ -311,11 +260,11 @@ mod tests {
             },
             ..Config::default()
         };
-        let mut launcher = launcher_with_single_app(cfg);
+        let mut core = core_with_single_app(cfg);
 
         let area = Rect::new(0, 0, 40, 5);
         let mut buf = Buffer::empty(area);
-        (&mut launcher).render(area, &mut buf);
+        render_core(&mut core, area, &mut buf);
 
         let row = row_at(&buf, 2, area);
         assert!(
@@ -323,39 +272,5 @@ mod tests {
             "expected custom cursor glyph, got {:?}",
             row
         );
-    }
-
-    #[test]
-    fn key_to_action_maps_navigation_and_text_keys() {
-        assert_eq!(key_to_action(KeyCode::Esc), Some(LauncherAction::Cancel));
-        assert_eq!(
-            key_to_action(KeyCode::Enter),
-            Some(LauncherAction::LaunchSelected)
-        );
-        assert_eq!(
-            key_to_action(KeyCode::Tab),
-            Some(LauncherAction::Autocomplete)
-        );
-        assert_eq!(key_to_action(KeyCode::Up), Some(LauncherAction::MoveUp));
-        assert_eq!(key_to_action(KeyCode::Down), Some(LauncherAction::MoveDown));
-        assert_eq!(key_to_action(KeyCode::Left), Some(LauncherAction::MoveLeft));
-        assert_eq!(
-            key_to_action(KeyCode::Right),
-            Some(LauncherAction::MoveRight)
-        );
-        assert_eq!(key_to_action(KeyCode::PageUp), Some(LauncherAction::PageUp));
-        assert_eq!(
-            key_to_action(KeyCode::PageDown),
-            Some(LauncherAction::PageDown)
-        );
-        assert_eq!(
-            key_to_action(KeyCode::Backspace),
-            Some(LauncherAction::Backspace)
-        );
-        assert_eq!(
-            key_to_action(KeyCode::Char('x')),
-            Some(LauncherAction::Insert('x'))
-        );
-        assert_eq!(key_to_action(KeyCode::Home), None);
     }
 }

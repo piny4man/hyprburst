@@ -6,8 +6,8 @@
 
 use std::time::Instant;
 
-use hyprburst::app::App;
-use hyprburst::config::Config;
+use hyprburst::domain::config::Config;
+use hyprburst::tui::app::App;
 
 // Local release target is ~4ms and the documented budget is <50ms. The ceiling
 // is set well above that because the test runs in a debug build on shared CI

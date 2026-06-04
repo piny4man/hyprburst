@@ -31,23 +31,31 @@ Hyprburst opens its own GPU-rendered window with a semi-transparent blurred back
 ```
 hyprburst/
 ├── src/
-│   ├── main.rs          # Entry point: window launch, `tui` fallback, bench modes
-│   ├── window.rs        # GPU launcher window (winit + glutin + glow cell renderer)
-│   ├── gui.rs           # Cell-grid bookkeeping: metrics, glyph atlas, dirty diff
-│   ├── font.rs          # Monospace font resolution (config path / $HYPRBURST_FONT / fc-match)
-│   ├── app.rs           # TUI application state and widget rendering (crossterm fallback)
-│   ├── config.rs        # TOML config + XDG path resolution
-│   ├── desktop.rs       # .desktop file discovery and parsing
-│   ├── effects.rs       # Fade-in animation via tachyonfx
-│   ├── history.rs       # SQLite-backed launch history
-│   ├── hyprland.rs      # hyprctl dispatch (legacy + 0.55+ Lua `hl.dsp` forms)
-│   ├── icon.rs          # Nerd Font glyph mapping by keyword (browser, terminal, editor, ...)
-│   ├── input.rs         # Keyboard input handling and event polling (TUI fallback)
-│   ├── launcher.rs      # Shared render_core + crossterm key mapping
-│   ├── launcher_core.rs # Frontend-agnostic launcher state machine
-│   ├── layout.rs        # Pure layout geometry (list + grid modes)
-│   ├── search.rs        # Hybrid fuzzy/prefix ranking
-│   └── terminal.rs      # Terminal lifecycle for the TUI fallback (raw mode, panic restore)
+│   ├── main.rs            # Entry point: window launch, `tui` fallback, bench modes
+│   ├── lib.rs             # Module tree (domain / view / gpu / tui / system / bench)
+│   ├── bench.rs           # Footprint probes for `--measure` / `--bench-startup`
+│   ├── domain/            # Frontend-agnostic state + data (no rendering)
+│   │   ├── launcher_core.rs # Launcher state machine
+│   │   ├── config.rs       # TOML config + XDG path resolution
+│   │   ├── search.rs       # Hybrid fuzzy/prefix ranking
+│   │   ├── history.rs      # SQLite-backed launch history
+│   │   ├── icon.rs         # Nerd Font glyph mapping by keyword (browser, editor, ...)
+│   │   └── desktop.rs      # .desktop file discovery and parsing
+│   ├── view/             # Shared ratatui-buffer painting (both frontends)
+│   │   ├── render.rs       # render_core: paints the launcher into a Buffer
+│   │   └── layout.rs       # Pure layout geometry (list + grid modes)
+│   ├── gpu/              # GPU window frontend (the default `hyprburst`)
+│   │   ├── window.rs       # winit + glutin + glow cell renderer; GL-native fade-in
+│   │   ├── grid.rs         # Cell metrics, glyph atlas, grid geometry
+│   │   └── font.rs         # Cell-font resolution (config / $HYPRBURST_FONT / Nerd Font)
+│   ├── tui/              # Crossterm/ratatui fallback frontend (`hyprburst tui`)
+│   │   ├── launcher.rs     # Launcher widget + crossterm key mapping
+│   │   ├── app.rs          # TUI application state and event loop
+│   │   ├── input.rs        # Keyboard input handling and event polling
+│   │   ├── terminal.rs     # Terminal lifecycle (raw mode, panic restore)
+│   │   └── effects.rs      # Fade-in animation via tachyonfx (TUI only)
+│   └── system/
+│       └── hyprland.rs     # hyprctl dispatch (legacy + 0.55+ Lua `hl.dsp` forms)
 ├── packaging/
 │   ├── hyprburst.conf   # Hyprlang drop-in: windowrules + Super+Space bind
 │   └── hyprburst.lua    # Hyprland 0.55+ Lua drop-in (same rules + bind)
@@ -62,7 +70,7 @@ hyprburst/
 - **OS** — Linux with [Hyprland](https://hyprland.org/) (a Wayland session). Hyprburst opens its own GPU window and dispatches launches through `hyprctl`, so it expects a running Hyprland session.
 - **OpenGL** — the launcher window is rendered with OpenGL via your GPU driver (Mesa or vendor). Virtually every Hyprland-capable machine already has this.
 - **Hyprland 0.48+** — the shipped `hyprburst.conf` uses the unified `windowrule` syntax. On Hyprland 0.55+ (Lua config), use `hyprburst.lua` instead — see [Hyprland Setup](#hyprland-setup).
-- **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. The window picks the system monospace via `fc-match`; if that font isn't a [Nerd Font](https://www.nerdfonts.com/), set `[font] path` (or `$HYPRBURST_FONT`) to one (e.g. `JetBrainsMono Nerd Font`) or the icons show as tofu squares.
+- **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. It auto-picks an installed [Nerd Font](https://www.nerdfonts.com/) (a *Mono* variant preferred); if none is installed, the icons show as tofu squares — install one (e.g. `JetBrainsMono Nerd Font`) or set `[font] path` / `$HYPRBURST_FONT` to one.
 
 ## Install
 
@@ -173,7 +181,7 @@ If Waybar renders above hyprburst, set Waybar's own config to `"layer": "bottom"
 
 Waybar is a layer-shell surface, so a normal floating window rule cannot draw above it while Waybar remains on the `top` layer.
 
-Hyprburst renders a fade-in animation on open (configurable timing lives in `src/effects.rs`). Escape closes the overlay.
+Hyprburst renders a GL-native fade-in animation on open (the ease-out ramp duration is `FADE_SECS` in `src/gpu/window.rs`; the `hyprburst tui` fallback fades via `src/tui/effects.rs`). Escape closes the overlay.
 
 ### Upgrading from 0.4.x
 
@@ -191,13 +199,14 @@ The launcher window and its cell font are configured under `[window]` and `[font
 | `window.width` | integer | `640` | Initial window width in logical pixels. Must be `>= 1`. (The overlay windowrule resizes it to the monitor anyway.) |
 | `window.height` | integer | `720` | Initial window height in logical pixels. Must be `>= 1`. |
 | `window.transparent` | bool | `true` | Keep the surface transparent so Hyprland's blur shows through. Set `false` to paint an opaque `colors.background` instead. |
+| `window.opacity` | float | `0.85` | Opacity (`0.0`–`1.0`) of the background panel painted behind the launcher when `transparent = true` — dims the blur so text stays legible. `1.0` fully hides the blur; lower values show more wallpaper. Raise it if the launcher looks too see-through. Ignored when `transparent = false`. |
 
 ### `[font]`
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `font.path` | string | unset | Explicit `.ttf`/`.otf` path for the cell font. When unset, the system monospace (`fc-match monospace`) is used; `$HYPRBURST_FONT` overrides it. Set this to a Nerd Font to guarantee entry icons render. |
-| `font.size` | float | `16.0` | Logical font height in pixels (before DPI scaling). The cell size is derived from the font's metrics at this size. |
+| `font.path` | string | unset | Explicit `.ttf`/`.otf` path for the cell font. When unset, hyprburst auto-picks an installed **Nerd Font** (so icons render), falling back to the system monospace (`fc-match monospace`); `$HYPRBURST_FONT` overrides everything. If icons show as tofu, point this at a *Nerd Font Mono* file. |
+| `font.size` | float | `20.0` | Logical font height in pixels (before DPI scaling). The cell size is derived from the font's metrics at this size. Bump it up if text looks too small. |
 
 ## Customizing the look
 
@@ -270,12 +279,13 @@ The `[window]` and `[font]` sections are documented in [Window and font](#window
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `colors.banner` | color | `magenta` | ASCII banner color. |
-| `colors.prompt` | color | `cyan` | Prompt + cursor color. |
-| `colors.selected` | color | `yellow` | Highlighted entry in the result list. |
-| `colors.empty` | color | `yellow` | "No matches" message color. |
-| `colors.background` | color | `#121218` | Window background — painted only when `window.transparent = false`; otherwise the surface stays transparent for the blur. |
-| `colors.foreground` | color | `#dcdcdc` | Default text color for unstyled launcher text (the Reset color). |
+| `colors.banner` | color | `#c6a0f6` | ASCII banner color. |
+| `colors.prompt` | color | `#8aadf4` | Prompt + cursor color. |
+| `colors.selected` | color | `#f2d5ff` | Text of the highlighted entry. |
+| `colors.selected_bg` | color | `#3a2e5a` | Highlight bar drawn behind the selected row. |
+| `colors.empty` | color | `#9a8cb5` | "No matches" message color. |
+| `colors.background` | color | `#1a1b26` | Window background — painted opaque when `window.transparent = false`, and as the dimming panel (at `window.opacity`) when `transparent = true`. |
+| `colors.foreground` | color | `#c8cce0` | Default text color for unstyled launcher text (the Reset color). |
 
 ### Color values
 
@@ -356,7 +366,9 @@ CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startu
 
 ## Troubleshooting
 
-**Icons show as tofu squares (□).** The window's font lacks Nerd Font glyphs. Set `[font] path` (or `$HYPRBURST_FONT`) to a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font`, or set `ui.show_icons = false` to drop icons entirely.
+**Icons show as tofu squares (□).** No Nerd Font is installed for hyprburst to auto-pick. Install a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font` (the *Mono* variant keeps icons one cell wide), or point `[font] path` (or `$HYPRBURST_FONT`) at one, or set `ui.show_icons = false` to drop icons entirely.
+
+**Text is too small.** Raise `[font] size` (default `20.0`).
 
 **The window doesn't open / `hyprburst` exits with a font or display error.** It needs a Wayland session with OpenGL. From an SSH or no-GPU session, run `hyprburst tui` instead (inline crossterm UI). If it can't find a font, set `[font] path`.
 
@@ -365,6 +377,8 @@ CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startu
 **Waybar (or another bar) renders on top of hyprburst.** Waybar is a layer-shell surface on the `top` layer, which a normal floating window can't cover. Set Waybar's config to `"layer": "bottom"` and restart it — details in [Hyprland Setup](#hyprland-setup).
 
 **Background blur / transparency doesn't show.** Keep `[window] transparent = true` (the default) and set Hyprland's `decoration:blur:enabled = true` globally. The `opacity 0.9 0.8` windowrule only affects hyprburst's own window.
+
+**The launcher looks too see-through / the blur washes out the text.** Raise `[window] opacity` (default `0.85`) toward `1.0` to dim more of the blur behind the launcher; `1.0` makes the background panel fully opaque.
 
 **`Super+Space` does nothing.** Confirm the bind sources/loads correctly (`bind = SUPER, Space, exec, hyprburst`, or the Lua `hl.bind(...)`) and that `hyprburst` is on the `PATH` Hyprland sees.
 

@@ -1,9 +1,9 @@
 use ratatui::crossterm::event::KeyCode;
 use ratatui::prelude::*;
 
-use crate::config::Config;
-use crate::effects::FadeIn;
-use crate::launcher::Launcher;
+use crate::domain::config::Config;
+use crate::tui::effects::FadeIn;
+use crate::tui::launcher::Launcher;
 
 pub struct App {
     pub running: bool,

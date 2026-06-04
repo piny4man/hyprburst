@@ -14,9 +14,9 @@
 //! window closes; Esc cancels. With `measure = true` the process exits right
 //! after the first frame is presented, printing a cold-start / peak-RSS report.
 //!
-//! The renderer drives the *same* tested layout/atlas/diff core as the benchmark
-//! model (see [`crate::gui`]); only the GL upload/draw lives here, verified in a
-//! live Hyprland session.
+//! The renderer drives the *same* tested layout/atlas primitives in
+//! [`crate::gpu::grid`]; only the GL upload/draw lives here, verified in a live
+//! Hyprland session.
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -43,16 +43,18 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 
 use crate::bench;
-use crate::config::Config;
-use crate::gui::{Atlas, CellMetrics, GlyphKey, cell_rect, grid_size};
-use crate::launcher::render_core;
-use crate::launcher_core::{LauncherAction, LauncherCore};
+use crate::domain::config::Config;
+use crate::domain::launcher_core::{LauncherAction, LauncherCore};
+use crate::gpu::grid::{Atlas, CellMetrics, GlyphKey, cell_rect, grid_size};
+use crate::view::render::render_core;
 
 /// Column label this renderer fills in the benchmark table.
 const VARIANT: &str = "gui";
 /// Atlas texture dimensions — ample for a launcher's character set.
 const ATLAS_W: u32 = 2048;
 const ATLAS_H: u32 = 2048;
+/// Fade-in duration (seconds) on first show — an ease-out ramp of the global alpha.
+const FADE_SECS: f32 = 0.20;
 
 /// Nanoseconds from process start to the first frame actually *presented* (buffer
 /// swapped) — the honest cold-start (time-to-visible). `0` = not yet painted.
@@ -71,7 +73,7 @@ pub fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     MEASURE.store(measure, Ordering::SeqCst);
 
-    let font = match crate::font::resolve_font_bytes(config.font.path.as_deref())
+    let font = match crate::gpu::font::resolve_font_bytes(config.font.path.as_deref())
         .and_then(|bytes| FontVec::try_from_vec(bytes).ok())
     {
         Some(font) => font,
@@ -118,23 +120,34 @@ struct App {
     /// Clear color as normalized RGBA: transparent for the blur, or the opaque
     /// `[colors] background` when `transparent = false`.
     clear: [f32; 4],
+    /// Dimming panel painted behind the launcher when transparent: the
+    /// `[colors] background` at `[window] opacity`. `None` when the surface is
+    /// already opaque (or opacity is 0).
+    panel: Option<[f32; 4]>,
+    /// When the fade-in began (first painted frame); `None` until then.
+    fade_start: Option<Instant>,
 }
 
 impl App {
     fn new(start: Instant, font: FontVec, config: Config) -> Self {
         let fg = rgb_norm(color_rgb(config.colors.foreground));
         let (br, bg_, bb) = color_rgb(config.colors.background);
+        let bg_norm = [br as f32 / 255.0, bg_ as f32 / 255.0, bb as f32 / 255.0];
         let clear = if config.window.transparent {
             // Fully transparent so Hyprland's blur shows through the window.
             [0.0, 0.0, 0.0, 0.0]
         } else {
-            [
-                br as f32 / 255.0,
-                bg_ as f32 / 255.0,
-                bb as f32 / 255.0,
-                1.0,
-            ]
+            [bg_norm[0], bg_norm[1], bg_norm[2], 1.0]
         };
+        // When transparent, dim the blur with a background panel at the configured
+        // opacity (1.0 = fully hide the blur). When opaque, the clear already fills
+        // the surface, so no panel is needed.
+        let panel = (config.window.transparent && config.window.opacity > 0.0).then_some([
+            bg_norm[0],
+            bg_norm[1],
+            bg_norm[2],
+            config.window.opacity,
+        ]);
         Self {
             start,
             font,
@@ -145,6 +158,8 @@ impl App {
             font_px: config.font.size,
             fg,
             clear,
+            panel,
+            fade_start: None,
             core: LauncherCore::new(config),
             gl: None,
             cell: CellMetrics::new(1, 1),
@@ -241,7 +256,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(gl) = &mut self.gl {
-                    let cells = build_cells(&mut self.core, self.grid, self.fg);
+                    let frame = build_cells(&mut self.core, self.grid, self.fg);
+                    // Fade-in: ease-out ramp of the global alpha over FADE_SECS,
+                    // measured from the first painted frame.
+                    let fade_start = self.fade_start.get_or_insert_with(Instant::now);
+                    let t = (fade_start.elapsed().as_secs_f32() / FADE_SECS).clamp(0.0, 1.0);
+                    let alpha = 1.0 - (1.0 - t).powi(4);
                     unsafe {
                         let size = gl.window.inner_size();
                         gl.renderer.draw(
@@ -249,11 +269,18 @@ impl ApplicationHandler for App {
                             &self.font,
                             size.width,
                             size.height,
-                            &cells,
+                            &frame,
                             self.clear,
+                            self.panel,
+                            alpha,
                         );
                     }
                     let _ = gl.surface.swap_buffers(&gl.context);
+
+                    // Keep animating until the fade completes.
+                    if t < 1.0 {
+                        gl.window.request_redraw();
+                    }
 
                     // Stamp the honest cold-start at the first present.
                     let ns = (self.start.elapsed().as_nanos() as u64).max(1);
@@ -273,36 +300,43 @@ impl ApplicationHandler for App {
 
 /// Render the launcher into a buffer sized to the grid and collect the non-blank
 /// cells the GL renderer draws. This is the live analog of the headless
-/// [`crate::gui::GuiModel`] paint, minus the dirty diff (the live renderer
+/// [`crate::gpu::grid::GuiModel`] paint, minus the dirty diff (the live renderer
 /// redraws the whole frame each time — the launcher repaints only on input).
-fn build_cells(
-    core: &mut LauncherCore,
-    grid: (u16, u16),
-    default_fg: [f32; 3],
-) -> Vec<CellInstance> {
+fn build_cells(core: &mut LauncherCore, grid: (u16, u16), default_fg: [f32; 3]) -> Frame {
     let area = Rect::new(0, 0, grid.0, grid.1);
     let mut buf = Buffer::empty(area);
     render_core(core, area, &mut buf);
 
     let width = area.width;
-    buf.content()
-        .iter()
-        .enumerate()
-        .filter_map(|(i, cell)| {
-            let ch = cell.symbol().chars().next().unwrap_or(' ');
-            if ch == ' ' || ch == '\0' {
-                return None;
-            }
-            let i = i as u16;
-            Some(CellInstance {
-                col: i % width,
-                row: i / width,
+    let mut bgs = Vec::new();
+    let mut glyphs = Vec::new();
+    for (i, cell) in buf.content().iter().enumerate() {
+        let i = i as u16;
+        let (col, row) = (i % width, i / width);
+
+        // Background fill: any cell with a non-default bg (e.g. the selected row,
+        // whose bar spans its spaces too) gets a solid quad behind the glyphs.
+        if !matches!(cell.bg, Color::Reset) {
+            let (r, g, b) = color_rgb(cell.bg);
+            bgs.push(BgCell {
+                col,
+                row,
+                color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
+            });
+        }
+
+        let ch = cell.symbol().chars().next().unwrap_or(' ');
+        if ch != ' ' && ch != '\0' {
+            glyphs.push(CellInstance {
+                col,
+                row,
                 ch,
                 bold: cell.modifier.contains(Modifier::BOLD),
                 color: ratatui_rgb(cell.fg, default_fg),
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    Frame { bgs, glyphs }
 }
 
 /// Translate a winit key press into an abstract [`LauncherAction`] — the same
@@ -408,6 +442,20 @@ struct CellInstance {
     color: [f32; 3],
 }
 
+/// A cell with a non-default background — a solid quad drawn behind the glyphs
+/// (e.g. the selection highlight bar, which spans the row including its spaces).
+struct BgCell {
+    col: u16,
+    row: u16,
+    color: [f32; 4],
+}
+
+/// One painted frame: the background fills (drawn first) and the glyph cells.
+struct Frame {
+    bgs: Vec<BgCell>,
+    glyphs: Vec<CellInstance>,
+}
+
 /// The OpenGL cell renderer: a textured-quad shader, a glyph atlas texture fed by
 /// `ab_glyph` rasterization, and the tested [`Atlas`] keying which glyph lives
 /// where. Each frame builds a vertex buffer of one quad per non-blank cell and
@@ -418,21 +466,45 @@ struct CellRenderer {
     vbo: glow::Buffer,
     viewport_loc: Option<glow::UniformLocation>,
     atlas_loc: Option<glow::UniformLocation>,
+    alpha_loc: Option<glow::UniformLocation>,
     atlas_tex: glow::Texture,
     atlas: Atlas,
+    /// UV of the reserved fully-opaque texel that solid (panel/selection) quads
+    /// sample so they share the glyph shader and draw call.
+    white_uv: (f32, f32),
     /// Pixel size of one cell — the atlas tile size and the layout unit.
     cell: CellMetrics,
     scale: ab_glyph::PxScale,
     ascent: f32,
 }
 
-/// Append one vertex (pos.xy px, uv.xy, color.rgb) to the buffer.
-fn push_vert(buf: &mut Vec<f32>, x: f32, y: f32, u: f32, v: f32, color: [f32; 3]) {
-    buf.extend_from_slice(&[x, y, u, v, color[0], color[1], color[2]]);
+/// Append one vertex (pos.xy px, uv.xy, color.rgba) to the buffer.
+fn push_vert(buf: &mut Vec<f32>, x: f32, y: f32, u: f32, v: f32, color: [f32; 4]) {
+    buf.extend_from_slice(&[x, y, u, v, color[0], color[1], color[2], color[3]]);
 }
 
-/// Floats per vertex: pos.xy (px), uv.xy, color.rgb.
-const VERTEX_FLOATS: usize = 7;
+/// Append a solid quad (`color` over the rect, sampling the atlas's white texel so
+/// the shared shader fills it flat) to the vertex buffer.
+fn push_solid_quad(
+    buf: &mut Vec<f32>,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    uv: (f32, f32),
+    color: [f32; 4],
+) {
+    let (u, v) = uv;
+    push_vert(buf, x0, y0, u, v, color);
+    push_vert(buf, x1, y0, u, v, color);
+    push_vert(buf, x1, y1, u, v, color);
+    push_vert(buf, x0, y0, u, v, color);
+    push_vert(buf, x1, y1, u, v, color);
+    push_vert(buf, x0, y1, u, v, color);
+}
+
+/// Floats per vertex: pos.xy (px), uv.xy, color.rgba.
+const VERTEX_FLOATS: usize = 8;
 
 impl CellRenderer {
     /// # Safety
@@ -443,6 +515,18 @@ impl CellRenderer {
         let vbo = unsafe { gl.create_buffer().expect("vbo") };
         let viewport_loc = unsafe { gl.get_uniform_location(program, "u_viewport") };
         let atlas_loc = unsafe { gl.get_uniform_location(program, "u_atlas") };
+        let alpha_loc = unsafe { gl.get_uniform_location(program, "u_alpha") };
+
+        // Reserve the first atlas slot for a fully-opaque white texel that solid
+        // quads (the background panel and the selection bar) sample, so they reuse
+        // the glyph shader and draw call. The sentinel key never collides with a
+        // real glyph; real glyphs take slots 1+.
+        let mut atlas = Atlas::new((ATLAS_W, ATLAS_H), fm.cell);
+        let white_slot = atlas
+            .get_or_insert(GlyphKey::new('\0', false))
+            .expect("atlas has room for the white texel");
+        let (wu0, wv0, wu1, wv1) = atlas.uv_rect(white_slot);
+        let white_uv = ((wu0 + wu1) * 0.5, (wv0 + wv1) * 0.5);
 
         let atlas_tex = unsafe { gl.create_texture().expect("atlas tex") };
         unsafe {
@@ -457,6 +541,19 @@ impl CellRenderer {
                 glow::RED,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&vec![0u8; (ATLAS_W * ATLAS_H) as usize])),
+            );
+            // Fill the reserved white tile (slot 0) with full coverage.
+            let (cw, chh) = (fm.cell.cell_w, fm.cell.cell_h);
+            gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                white_slot.px.0 as i32,
+                white_slot.px.1 as i32,
+                cw as i32,
+                chh as i32,
+                glow::RED,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&vec![255u8; (cw * chh) as usize])),
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
@@ -479,8 +576,10 @@ impl CellRenderer {
             vbo,
             viewport_loc,
             atlas_loc,
+            alpha_loc,
             atlas_tex,
-            atlas: Atlas::new((ATLAS_W, ATLAS_H), fm.cell),
+            atlas,
+            white_uv,
             cell: fm.cell,
             scale: PxScale::from(fm.px),
             ascent: fm.ascent,
@@ -537,32 +636,66 @@ impl CellRenderer {
         }
     }
 
-    /// Draw all visible cells in a single call: ensure each glyph is atlas-
-    /// resident (rasterizing + uploading on a miss), build one interleaved vertex
-    /// buffer of quads, upload it, and `glDrawArrays`. This is the only place with
-    /// the live GL context, so glyph upload happens here. `clear` is the RGBA the
-    /// frame is cleared to (transparent for the blur, or an opaque background).
+    /// Draw a frame in a single call: a full-window dimming `panel` (if any), then
+    /// the background fills (selection bar), then the glyph quads — appended in
+    /// that order so `SRC_ALPHA` blending layers correctly — uploaded once and
+    /// drawn with `glDrawArrays`. This is the only place with the live GL context,
+    /// so glyph upload happens here. `clear` is the RGBA the frame is cleared to
+    /// (transparent for the blur, or an opaque background); `alpha` is the global
+    /// fade-in factor multiplied into every quad.
     ///
     /// # Safety
     /// `gl` must be the current context.
+    #[allow(clippy::too_many_arguments)]
     unsafe fn draw(
         &mut self,
         gl: &glow::Context,
         font: &FontVec,
         width: u32,
         height: u32,
-        cells: &[CellInstance],
+        frame: &Frame,
         clear: [f32; 4],
+        panel: Option<[f32; 4]>,
+        alpha: f32,
     ) {
         let cell = self.cell;
-        let mut verts: Vec<f32> = Vec::with_capacity(cells.len() * 6 * VERTEX_FLOATS);
-        for c in cells {
+        let white = self.white_uv;
+        let quads = frame.glyphs.len() + frame.bgs.len() + 1;
+        let mut verts: Vec<f32> = Vec::with_capacity(quads * 6 * VERTEX_FLOATS);
+
+        // 1. Full-window dimming panel, behind everything.
+        if let Some(color) = panel {
+            push_solid_quad(
+                &mut verts,
+                0.0,
+                0.0,
+                width as f32,
+                height as f32,
+                white,
+                color,
+            );
+        }
+        // 2. Per-cell background fills (the selection bar).
+        for b in &frame.bgs {
+            let (x, y, w, h) = cell_rect(b.col, b.row, cell);
+            push_solid_quad(
+                &mut verts,
+                x as f32,
+                y as f32,
+                (x + w) as f32,
+                (y + h) as f32,
+                white,
+                b.color,
+            );
+        }
+        // 3. Glyph quads on top.
+        for c in &frame.glyphs {
             let Some((u0, v0, u1, v1)) = self.ensure_glyph(gl, font, c.ch, c.bold) else {
                 continue;
             };
             let (x, y, w, h) = cell_rect(c.col, c.row, cell);
             let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
-            let col = c.color;
+            let col = [c.color[0], c.color[1], c.color[2], 1.0];
             push_vert(&mut verts, x0, y0, u0, v0, col);
             push_vert(&mut verts, x1, y0, u1, v0, col);
             push_vert(&mut verts, x1, y1, u1, v1, col);
@@ -582,6 +715,7 @@ impl CellRenderer {
 
             gl.use_program(Some(self.program));
             gl.uniform_2_f32(self.viewport_loc.as_ref(), width as f32, height as f32);
+            gl.uniform_1_f32(self.alpha_loc.as_ref(), alpha);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
             gl.uniform_1_i32(self.atlas_loc.as_ref(), 0);
@@ -600,7 +734,7 @@ impl CellRenderer {
             gl.enable_vertex_attrib_array(1);
             gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, 2 * 4);
             gl.enable_vertex_attrib_array(2);
-            gl.vertex_attrib_pointer_f32(2, 3, glow::FLOAT, false, stride, 4 * 4);
+            gl.vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, stride, 4 * 4);
 
             let count = (verts.len() / VERTEX_FLOATS) as i32;
             gl.draw_arrays(glow::TRIANGLES, 0, count);
@@ -616,10 +750,10 @@ unsafe fn build_program(gl: &glow::Context) -> glow::Program {
     const VS: &str = r#"#version 330 core
 layout (location = 0) in vec2 a_pos;
 layout (location = 1) in vec2 a_uv;
-layout (location = 2) in vec3 a_color;
+layout (location = 2) in vec4 a_color;
 uniform vec2 u_viewport;
 out vec2 v_uv;
-out vec3 v_color;
+out vec4 v_color;
 void main() {
     vec2 ndc = vec2(a_pos.x / u_viewport.x * 2.0 - 1.0, 1.0 - a_pos.y / u_viewport.y * 2.0);
     gl_Position = vec4(ndc, 0.0, 1.0);
@@ -627,14 +761,18 @@ void main() {
     v_color = a_color;
 }
 "#;
+    // Glyph quads sample coverage from the atlas red channel; solid quads (panel,
+    // selection bar) sample the reserved white texel (coverage 1.0). Both fold in
+    // the vertex alpha and the global `u_alpha` fade-in factor.
     const FS: &str = r#"#version 330 core
 in vec2 v_uv;
-in vec3 v_color;
+in vec4 v_color;
 uniform sampler2D u_atlas;
+uniform float u_alpha;
 out vec4 frag;
 void main() {
     float a = texture(u_atlas, v_uv).r;
-    frag = vec4(v_color, a);
+    frag = vec4(v_color.rgb, v_color.a * a * u_alpha);
 }
 "#;
     unsafe {

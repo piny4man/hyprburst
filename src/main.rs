@@ -2,9 +2,10 @@ use std::io;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use hyprburst::app::App;
-use hyprburst::config::Config;
-use hyprburst::{input, terminal, window};
+use hyprburst::domain::config::Config;
+use hyprburst::gpu::window;
+use hyprburst::tui::app::App;
+use hyprburst::tui::{input, terminal};
 
 const HELP: &str = "\
 hyprburst — a fast application launcher
@@ -20,7 +21,6 @@ FLAGS:
     -h, --help           Print this help message
     --measure            Open the window, report cold-start + RSS at first frame, then exit
     --bench-startup      Measure config-load + App::new latency and exit
-    --bench              Run the benchmark harness and print the comparison table
 
 With no command, hyprburst opens its launcher window (GPU-rendered, owns its own
 Wayland surface). Use `hyprburst tui` to run inline in the current terminal.
@@ -104,11 +104,6 @@ fn main() -> ExitCode {
 
     if args.iter().any(|a| a == "--bench-startup") {
         return io_to_exit(bench_startup());
-    }
-
-    if args.iter().any(|a| a == "--bench") {
-        print!("{}", hyprburst::bench::run_bake_off_report());
-        return ExitCode::SUCCESS;
     }
 
     if args.iter().any(|a| a == "--measure") {

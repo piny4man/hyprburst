@@ -9,11 +9,11 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::config::Config;
-use crate::desktop::{DesktopEntry, discover_apps};
-use crate::history::{History, score as history_score};
-use crate::icon::fallback_glyph;
-use crate::search::filter_and_rank;
+use crate::domain::config::Config;
+use crate::domain::desktop::{DesktopEntry, discover_apps};
+use crate::domain::history::{History, score as history_score};
+use crate::domain::icon::fallback_glyph;
+use crate::domain::search::filter_and_rank;
 
 /// Abstract interaction vocabulary for the launcher.
 ///
@@ -282,8 +282,8 @@ impl LauncherCore {
             if !app.exec.is_empty() {
                 // Dispatch in whichever `hyprctl` form the running Hyprland
                 // accepts — bare-word (pre-0.55) or Lua `hl.dsp` (0.55+), which
-                // otherwise silently no-ops the launch. See [`crate::hyprland`].
-                crate::hyprland::dispatch_exec(&app.exec);
+                // otherwise silently no-ops the launch. See [`crate::system::hyprland`].
+                crate::system::hyprland::dispatch_exec(&app.exec);
             }
             if let Some(history) = &self.history {
                 let _ = history.record_launch(&app.id, &app.name);

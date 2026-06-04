@@ -1,72 +1,10 @@
-//! Benchmark harness and shared instrumentation contract for the launcher.
+//! Footprint probes and the `--measure` report for the launcher.
 //!
-//! The *contract* — an injectable [`Clock`], a deterministic [`synthetic_apps`]
-//! set, a [`scripted_input`] sequence of frontend-agnostic [`LauncherAction`]s,
-//! the [`measure_frames`] driver, [`summarize`], and the [`Footprint`] probes —
-//! is frontend-agnostic: it operates purely on [`LauncherCore`] and produces a
-//! [`Metrics`] record. Each frontend plugs in its own paint closure. Output is a
-//! single diffable comparison table ([`render_table`]) plus a machine-readable
-//! record ([`to_json`]), one column per variant.
-//!
-//! Two columns are populated headlessly (no window): [`run_baseline`] (the
-//! crossterm `tui` path) and [`run_gui`] (the windowed launcher's per-frame CPU
-//! work via [`crate::gui::GuiModel`]). Both paint frames into a ratatui
-//! [`Buffer`] via the shipped [`render_core`] path, so they run anywhere; the
-//! GUI's real GPU cost (cold-start, fps) comes from the live `--measure` run.
-
-use std::time::Instant;
-
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-
-use crate::config::Config;
-use crate::desktop::DesktopEntry;
-use crate::launcher::render_core;
-use crate::launcher_core::{LauncherAction, LauncherCore};
-
-/// Per-frame budget for 60 fps; frames slower than this count as jank.
-pub const JANK_BUDGET_NS: u64 = 16_666_667;
-
-/// Monotonic time source, abstracted so the timing logic can be driven by a
-/// scripted fake clock in tests.
-pub trait Clock {
-    /// Nanoseconds since some fixed, monotonic origin.
-    fn now_nanos(&self) -> u64;
-}
-
-/// Real wall-clock source backed by [`Instant`].
-pub struct MonotonicClock {
-    base: Instant,
-}
-
-impl MonotonicClock {
-    pub fn new() -> Self {
-        Self {
-            base: Instant::now(),
-        }
-    }
-}
-
-impl Default for MonotonicClock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clock for MonotonicClock {
-    fn now_nanos(&self) -> u64 {
-        self.base.elapsed().as_nanos() as u64
-    }
-}
-
-/// Raw per-frame timings captured by [`measure_frames`], before aggregation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawTimings {
-    /// Exec-equivalent → first painted frame, in nanoseconds.
-    pub cold_start_ns: u64,
-    /// Action → repainted frame, one entry per scripted input, in nanoseconds.
-    pub frame_ns: Vec<u64>,
-}
+//! What survives the bake-off: the live instrumentation the shipped binary still
+//! uses. [`peak_rss_kb`] backs `hyprburst --bench-startup`; [`probe_metrics`] +
+//! [`live_footprint`] + [`render_table`] + [`to_json`] back `hyprburst --measure`
+//! (the GPU window reports its cold-start and footprint at first paint). The
+//! multi-variant comparison harness was removed once the GPU launcher won.
 
 /// Footprint measurements that don't come from frame timing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,150 +17,29 @@ pub struct Footprint {
     pub dep_count: Option<u32>,
 }
 
-/// One variant's column in the comparison table.
+/// One variant's column in the report table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Metrics {
     pub variant: String,
     pub cold_start_ns: u64,
-    /// Warm hide→show→painted latency. `None` for the spawn-per-launch TUI,
+    /// Warm hide→show→painted latency. `None` for the spawn-per-launch launcher,
     /// which has no persistent window to toggle; rendered as `N/A`.
     pub warm_toggle_ns: Option<u64>,
     /// Mean action → repainted-frame latency.
     pub input_latency_ns: u64,
     /// Sustained frames per second across the scripted input sequence.
     pub fps: f64,
-    /// Frames slower than [`JANK_BUDGET_NS`].
+    /// Frames slower than the 60 fps budget.
     pub jank_count: u32,
     pub footprint: Footprint,
 }
 
-/// Deterministic in-repo app set used by every variant, so benchmark runs are
-/// comparable across machines and time rather than depending on live
-/// `discover_apps()`.
-pub fn synthetic_apps() -> Vec<DesktopEntry> {
-    const APPS: &[(&str, &str)] = &[
-        ("Firefox", "firefox"),
-        ("Chromium", "chromium"),
-        ("Kitty", "kitty"),
-        ("Alacritty", "alacritty"),
-        ("Visual Studio Code", "code"),
-        ("Neovim", "nvim"),
-        ("GIMP", "gimp"),
-        ("Inkscape", "inkscape"),
-        ("Blender", "blender"),
-        ("Spotify", "spotify"),
-        ("Discord", "discord"),
-        ("Slack", "slack"),
-        ("Telegram", "telegram-desktop"),
-        ("Thunderbird", "thunderbird"),
-        ("LibreOffice Writer", "libreoffice-writer"),
-        ("LibreOffice Calc", "libreoffice-calc"),
-        ("Files", "nautilus"),
-        ("Calculator", "gnome-calculator"),
-        ("Steam", "steam"),
-        ("OBS Studio", "obs"),
-        ("VLC", "vlc"),
-        ("mpv", "mpv"),
-        ("Krita", "krita"),
-        ("Audacity", "audacity"),
-    ];
-    APPS.iter()
-        .map(|&(name, exec)| DesktopEntry {
-            id: exec.to_string(),
-            name: name.to_string(),
-            icon: exec.to_string(),
-            exec: exec.to_string(),
-        })
-        .collect()
-}
-
-/// Fixed scripted input that exercises fast typing and scrolling. Deliberately
-/// excludes `LaunchSelected`/`Cancel`, which would stop the core mid-run.
-pub fn scripted_input() -> Vec<LauncherAction> {
-    use LauncherAction::*;
-    vec![
-        Insert('f'),
-        Insert('i'),
-        Insert('r'),
-        Backspace,
-        Backspace,
-        Backspace,
-        MoveDown,
-        MoveDown,
-        MoveDown,
-        MoveDown,
-        MoveDown,
-        MoveUp,
-        MoveUp,
-        PageDown,
-        PageUp,
-        MoveRight,
-        MoveLeft,
-        Autocomplete,
-    ]
-}
-
-/// Drive the core through cold start and the scripted input, timing each step
-/// with `clock` and painting with `render`. Variant-agnostic: the caller
-/// supplies how a frame is painted.
-///
-/// Reads the clock a deterministic `2 + 2 * input.len()` times, which is what
-/// makes the timing testable with a scripted fake clock.
-pub fn measure_frames(
-    clock: &dyn Clock,
-    core: &mut LauncherCore,
-    input: &[LauncherAction],
-    mut render: impl FnMut(&mut LauncherCore),
-) -> RawTimings {
-    let t0 = clock.now_nanos();
-    render(core);
-    let t1 = clock.now_nanos();
-    let cold_start_ns = t1.saturating_sub(t0);
-
-    let mut frame_ns = Vec::with_capacity(input.len());
-    for &action in input {
-        let before = clock.now_nanos();
-        core.apply(action);
-        render(core);
-        let after = clock.now_nanos();
-        frame_ns.push(after.saturating_sub(before));
-    }
-
-    RawTimings {
-        cold_start_ns,
-        frame_ns,
-    }
-}
-
-/// Aggregate raw timings into a labelled [`Metrics`] column.
-pub fn summarize(raw: &RawTimings, variant: &str, footprint: Footprint) -> Metrics {
-    let n = raw.frame_ns.len() as u64;
-    let total: u64 = raw.frame_ns.iter().sum();
-    let input_latency_ns = total.checked_div(n).unwrap_or(0);
-    let fps = if total == 0 {
-        0.0
-    } else {
-        n as f64 / (total as f64 / 1_000_000_000.0)
-    };
-    let jank_count = raw.frame_ns.iter().filter(|&&f| f > JANK_BUDGET_NS).count() as u32;
-
-    Metrics {
-        variant: variant.to_string(),
-        cold_start_ns: raw.cold_start_ns,
-        warm_toggle_ns: None,
-        input_latency_ns,
-        fps,
-        jank_count,
-        footprint,
-    }
-}
-
-/// Build a [`Metrics`] column for a bare-window viability probe (Phase 3).
+/// Build a [`Metrics`] column for the GPU window's first-paint report.
 ///
 /// Only cold-start (process start → first painted frame) and footprint are
-/// measured here: the bare window runs no [`LauncherCore`] input loop, so input
-/// latency, fps, and jank stay zero — the full POC fills them in Phase 4 — and
-/// warm-toggle is `N/A`, as for the baseline TUI.
+/// measured: the report is emitted at first paint, before any input loop, so
+/// input latency, fps, and jank stay zero, and warm-toggle is `N/A` (the launcher
+/// spawns per launch).
 pub fn probe_metrics(variant: &str, cold_start_ns: u64, footprint: Footprint) -> Metrics {
     Metrics {
         variant: variant.to_string(),
@@ -328,65 +145,10 @@ pub fn dep_count_from_tree(tree: &str) -> u32 {
     seen.len() as u32
 }
 
-/// Run the baseline ratatui TUI variant against the contract and produce its
-/// fully-populated [`Metrics`] column.
-pub fn run_baseline() -> Metrics {
-    let clock = MonotonicClock::new();
-    let area = Rect::new(0, 0, 80, 40);
-    let mut buf = Buffer::empty(area);
-    let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
-    let input = scripted_input();
-
-    let raw = measure_frames(&clock, &mut core, &input, |c| {
-        render_core(c, area, &mut buf);
-    });
-
-    summarize(&raw, "baseline-tui", live_footprint())
-}
-
-/// Run the baseline and render both the human-readable table and the
-/// machine-readable record.
-pub fn run_baseline_report() -> String {
-    let metrics = [run_baseline()];
-    format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
-}
-
-/// Run the windowed launcher (`gui`) against the contract and produce its
-/// [`Metrics`] column.
-///
-/// Paints headlessly via [`crate::gui::GuiModel`]: render the launcher with
-/// `render_core` (identical to the baseline — the window paints the same TUI),
-/// snapshot the resulting ratatui buffer, dirty-diff it, and atlas-key the
-/// changes — the windowless renderer work the live GL window does before glyph
-/// rasterization and the GPU draw. There is **no emulator parse**: owning the
-/// surface natively removes the VT round-trip, so this column sits just above the
-/// baseline. GPU upload/draw is excluded, as GPU compositing is from every
-/// column. Warm-toggle stays `N/A`: the launcher spawns per launch. The live
-/// cold-start and peak RSS come from `hyprburst --measure`.
-pub fn run_gui() -> Metrics {
-    let clock = MonotonicClock::new();
-    let area = Rect::new(0, 0, 80, 40);
-    let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
-    let mut model = crate::gui::GuiModel::new(area);
-    let input = scripted_input();
-
-    let raw = measure_frames(&clock, &mut core, &input, |c| model.paint(c));
-
-    summarize(&raw, "gui", live_footprint())
-}
-
-/// Render the comparison table: the baseline (crossterm `tui`) column and the
-/// windowed `gui` column side by side, with the machine-readable record.
-/// `hyprburst --bench` prints this.
-pub fn run_bake_off_report() -> String {
-    let metrics = [run_baseline(), run_gui()];
-    format!("{}\n\n{}\n", render_table(&metrics), to_json(&metrics))
-}
-
 /// Formats one metric into its table cell.
 type CellFmt = fn(&Metrics) -> String;
 
-/// Ordered (label, cell-formatter) rows of the comparison table.
+/// Ordered (label, cell-formatter) rows of the report table.
 fn table_rows() -> [(&'static str, CellFmt); 8] {
     [
         ("cold start", |m| fmt_ms(m.cold_start_ns)),
@@ -414,7 +176,7 @@ fn table_rows() -> [(&'static str, CellFmt); 8] {
     ]
 }
 
-/// Render a stable, diffable comparison table — one column per variant.
+/// Render a stable, diffable report table — one column per variant.
 pub fn render_table(metrics: &[Metrics]) -> String {
     let rows = table_rows();
 
@@ -525,29 +287,6 @@ fn json_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
-
-    struct FakeClock {
-        readings: Vec<u64>,
-        idx: Cell<usize>,
-    }
-
-    impl FakeClock {
-        fn new(readings: Vec<u64>) -> Self {
-            Self {
-                readings,
-                idx: Cell::new(0),
-            }
-        }
-    }
-
-    impl Clock for FakeClock {
-        fn now_nanos(&self) -> u64 {
-            let i = self.idx.get();
-            self.idx.set(i + 1);
-            self.readings[i]
-        }
-    }
 
     fn sample_metrics() -> Metrics {
         Metrics {
@@ -563,70 +302,6 @@ mod tests {
                 dep_count: Some(87),
             },
         }
-    }
-
-    #[test]
-    fn synthetic_apps_is_deterministic_and_nonempty() {
-        let a = synthetic_apps();
-        let b = synthetic_apps();
-        assert!(!a.is_empty());
-        let ids_a: Vec<&str> = a.iter().map(|e| e.id.as_str()).collect();
-        let ids_b: Vec<&str> = b.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids_a, ids_b);
-    }
-
-    #[test]
-    fn scripted_input_exercises_typing_and_scroll_without_stopping() {
-        let seq = scripted_input();
-        assert!(seq.iter().any(|a| matches!(a, LauncherAction::Insert(_))));
-        assert!(seq.iter().any(|a| matches!(a, LauncherAction::MoveDown)));
-        assert!(seq.iter().any(|a| matches!(a, LauncherAction::PageDown)));
-        assert!(
-            !seq.iter()
-                .any(|a| matches!(a, LauncherAction::LaunchSelected | LauncherAction::Cancel)),
-            "benchmark input must not launch or cancel the core",
-        );
-    }
-
-    #[test]
-    fn measure_frames_brackets_each_step_with_the_clock() {
-        let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
-        let input = vec![LauncherAction::Insert('a'), LauncherAction::MoveDown];
-        // Reads: t0, t1 (cold), then before/after for each of 2 frames.
-        let clock = FakeClock::new(vec![0, 100, 200, 350, 400, 600]);
-
-        let raw = measure_frames(&clock, &mut core, &input, |_| {});
-
-        assert_eq!(raw.cold_start_ns, 100);
-        assert_eq!(raw.frame_ns, vec![150, 200]);
-    }
-
-    #[test]
-    fn summarize_computes_latency_fps_and_jank() {
-        let raw = RawTimings {
-            cold_start_ns: 100,
-            frame_ns: vec![10_000_000, 20_000_000],
-        };
-        let m = summarize(&raw, "baseline-tui", Footprint::default());
-
-        assert_eq!(m.cold_start_ns, 100);
-        assert_eq!(m.input_latency_ns, 15_000_000);
-        assert_eq!(m.jank_count, 1, "20ms frame exceeds the 60fps budget");
-        assert!((m.fps - 66.6666).abs() < 0.01);
-        assert_eq!(m.warm_toggle_ns, None);
-    }
-
-    #[test]
-    fn summarize_handles_zero_frames() {
-        let raw = RawTimings {
-            cold_start_ns: 0,
-            frame_ns: vec![],
-        };
-        let m = summarize(&raw, "x", Footprint::default());
-
-        assert_eq!(m.input_latency_ns, 0);
-        assert!(m.fps.abs() < 1e-9);
-        assert_eq!(m.jank_count, 0);
     }
 
     #[test]
@@ -668,12 +343,12 @@ ratatui v0.30.0
             binary_size_bytes: Some(120_000_000),
             dep_count: Some(375),
         };
-        let m = probe_metrics("glui-window-probe", 9_000_000, footprint);
+        let m = probe_metrics("gui", 9_000_000, footprint);
 
-        assert_eq!(m.variant, "glui-window-probe");
+        assert_eq!(m.variant, "gui");
         assert_eq!(m.cold_start_ns, 9_000_000);
         assert_eq!(m.footprint, footprint);
-        // Bare window: no input loop, so these stay unmeasured.
+        // First-paint report: no input loop, so these stay unmeasured.
         assert_eq!(m.input_latency_ns, 0);
         assert!(m.fps.abs() < 1e-9);
         assert_eq!(m.jank_count, 0);
@@ -723,58 +398,5 @@ ratatui v0.30.0
         let json = to_json(&[sample_metrics()]);
         let expected = "[{\"variant\":\"baseline-tui\",\"cold_start_ns\":1234000,\"warm_toggle_ns\":null,\"input_latency_ns\":50000,\"fps\":60.0000,\"jank_count\":0,\"peak_rss_kb\":7388,\"binary_size_bytes\":4200000,\"dep_count\":87}]";
         assert_eq!(json, expected);
-    }
-
-    #[test]
-    fn gui_paint_closure_brackets_each_frame() {
-        // The window's frame-timing hook: driving the core through
-        // `measure_frames` with the GuiModel paint closure must bracket cold
-        // start and every scripted frame just like the baseline, so the harness
-        // times real per-frame work deterministically.
-        let area = Rect::new(0, 0, 80, 40);
-        let mut core = LauncherCore::from_apps(synthetic_apps(), Config::default());
-        let mut model = crate::gui::GuiModel::new(area);
-        let input = vec![LauncherAction::Insert('a'), LauncherAction::MoveDown];
-        // Reads: t0, t1 (cold), then before/after for each of 2 frames.
-        let clock = FakeClock::new(vec![0, 100, 200, 350, 400, 600]);
-
-        let raw = measure_frames(&clock, &mut core, &input, |c| model.paint(c));
-
-        assert_eq!(raw.cold_start_ns, 100);
-        assert_eq!(raw.frame_ns, vec![150, 200]);
-    }
-
-    #[test]
-    fn run_gui_populates_latency_and_footprint() {
-        let m = run_gui();
-        assert_eq!(m.variant, "gui");
-        assert!(m.cold_start_ns > 0);
-        assert!(m.input_latency_ns > 0);
-        assert!(m.fps > 0.0);
-        assert!(m.footprint.peak_rss_kb.is_some());
-        assert!(m.footprint.binary_size_bytes.is_some());
-        assert!(m.footprint.dep_count.is_some());
-        // Spawn-per-launch: no resident window to toggle.
-        assert_eq!(m.warm_toggle_ns, None);
-    }
-
-    #[test]
-    fn run_bake_off_report_includes_baseline_and_gui() {
-        let report = run_bake_off_report();
-        assert!(report.contains("baseline-tui"));
-        assert!(report.contains("gui"));
-    }
-
-    #[test]
-    fn run_baseline_populates_every_metric() {
-        let m = run_baseline();
-        assert_eq!(m.variant, "baseline-tui");
-        assert!(m.cold_start_ns > 0);
-        assert!(m.input_latency_ns > 0);
-        assert!(m.fps > 0.0);
-        assert!(m.footprint.peak_rss_kb.is_some());
-        assert!(m.footprint.binary_size_bytes.is_some());
-        assert!(m.footprint.dep_count.is_some());
-        assert_eq!(m.warm_toggle_ns, None);
     }
 }

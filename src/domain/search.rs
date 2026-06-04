@@ -111,9 +111,9 @@ fn fuzzy_match(query: &str, target: &str) -> Option<u32> {
 
 pub fn filter_and_rank<'a>(
     query: &str,
-    apps: &'a [crate::desktop::DesktopEntry],
+    apps: &'a [crate::domain::desktop::DesktopEntry],
     history_scores: &HashMap<String, f64>,
-) -> Vec<(&'a crate::desktop::DesktopEntry, u32)> {
+) -> Vec<(&'a crate::domain::desktop::DesktopEntry, u32)> {
     if query.is_empty() {
         let mut results: Vec<_> = apps
             .iter()
@@ -152,7 +152,7 @@ pub fn filter_and_rank<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::desktop::DesktopEntry;
+    use crate::domain::desktop::DesktopEntry;
 
     #[test]
     fn empty_query_returns_all() {

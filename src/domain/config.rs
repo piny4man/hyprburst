@@ -17,7 +17,12 @@ const DEFAULT_PAGE_SIZE: usize = 10;
 pub(crate) const DEFAULT_APP_ID: &str = "hyprburst";
 pub(crate) const DEFAULT_WINDOW_WIDTH: u32 = 640;
 pub(crate) const DEFAULT_WINDOW_HEIGHT: u32 = 720;
-pub(crate) const DEFAULT_FONT_SIZE: f32 = 16.0;
+pub(crate) const DEFAULT_FONT_SIZE: f32 = 20.0;
+/// Opacity of the background panel painted behind the launcher when the surface
+/// is transparent: `1.0` fully hides Hyprland's blur, lower values let more of it
+/// through. Dims the blur so text stays legible instead of floating on a raw
+/// wallpaper.
+pub(crate) const DEFAULT_WINDOW_OPACITY: f32 = 0.85;
 pub(crate) const MAX_PADDING: u16 = 32;
 pub(crate) const DEFAULT_SELECTED_MARKER: &str = "> ";
 pub(crate) const DEFAULT_CURSOR_CHAR: &str = "█";
@@ -43,6 +48,10 @@ pub struct WindowConfig {
     pub width: u32,
     pub height: u32,
     pub transparent: bool,
+    /// Opacity (`0.0`–`1.0`) of the background panel painted behind the launcher
+    /// when `transparent = true` — dims Hyprland's blur so text stays legible.
+    /// Ignored when `transparent = false` (the surface is already opaque).
+    pub opacity: f32,
 }
 
 impl Default for WindowConfig {
@@ -52,6 +61,7 @@ impl Default for WindowConfig {
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
             transparent: true,
+            opacity: DEFAULT_WINDOW_OPACITY,
         }
     }
 }
@@ -120,9 +130,11 @@ pub struct Colors {
     pub banner: Color,
     pub prompt: Color,
     pub selected: Color,
+    /// Background highlight bar drawn behind the selected row.
+    pub selected_bg: Color,
     pub empty: Color,
-    /// Window background — painted only when `window.transparent = false`;
-    /// otherwise the surface stays transparent for Hyprland's blur.
+    /// Window background — painted opaque when `window.transparent = false`, and
+    /// as the dimming panel (at `window.opacity`) when `transparent = true`.
     pub background: Color,
     /// Default text color for the unstyled (Reset) launcher text.
     pub foreground: Color,
@@ -144,13 +156,16 @@ impl Default for UiConfig {
 
 impl Default for Colors {
     fn default() -> Self {
+        // A modern dark, violet-tinted palette (no pure black/white), all
+        // overridable in `[colors]`.
         Self {
-            banner: Color::Magenta,
-            prompt: Color::Cyan,
-            selected: Color::Yellow,
-            empty: Color::Yellow,
-            background: Color::Rgb(0x12, 0x12, 0x18),
-            foreground: Color::Rgb(0xdc, 0xdc, 0xdc),
+            banner: Color::Rgb(0xc6, 0xa0, 0xf6),      // lavender
+            prompt: Color::Rgb(0x8a, 0xad, 0xf4),      // periwinkle
+            selected: Color::Rgb(0xf2, 0xd5, 0xff),    // bright violet-white
+            selected_bg: Color::Rgb(0x3a, 0x2e, 0x5a), // muted violet bar
+            empty: Color::Rgb(0x9a, 0x8c, 0xb5),       // muted lilac
+            background: Color::Rgb(0x1a, 0x1b, 0x26),  // dark slate-violet
+            foreground: Color::Rgb(0xc8, 0xcc, 0xe0),  // soft light
         }
     }
 }
@@ -278,6 +293,7 @@ struct RawColors {
     banner: Option<String>,
     prompt: Option<String>,
     selected: Option<String>,
+    selected_bg: Option<String>,
     empty: Option<String>,
     background: Option<String>,
     foreground: Option<String>,
@@ -290,6 +306,7 @@ struct RawWindow {
     width: Option<u32>,
     height: Option<u32>,
     transparent: Option<bool>,
+    opacity: Option<f32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -312,6 +329,11 @@ impl RawConfig {
                     self.colors.selected,
                     "colors.selected",
                     defaults.colors.selected,
+                )?,
+                selected_bg: resolve_color(
+                    self.colors.selected_bg,
+                    "colors.selected_bg",
+                    defaults.colors.selected_bg,
                 )?,
                 empty: resolve_color(self.colors.empty, "colors.empty", defaults.colors.empty)?,
                 background: resolve_color(
@@ -369,11 +391,22 @@ impl RawWindow {
             None => defaults.height,
         };
 
+        let opacity = match self.opacity {
+            Some(o) if !(o.is_finite() && (0.0..=1.0).contains(&o)) => {
+                return Err(ConfigError::Validation(
+                    "window.opacity must be between 0.0 and 1.0".to_string(),
+                ));
+            }
+            Some(o) => o,
+            None => defaults.opacity,
+        };
+
         Ok(WindowConfig {
             app_id,
             width,
             height,
             transparent: self.transparent.unwrap_or(defaults.transparent),
+            opacity,
         })
     }
 }
@@ -606,8 +639,10 @@ mod tests {
         assert!(!cfg.ui.banner.is_empty());
         assert_eq!(cfg.ui.prompt, "> ");
         assert_eq!(cfg.ui.page_size, 10);
-        assert_eq!(cfg.colors.prompt, Color::Cyan);
-        assert_eq!(cfg.colors.selected, Color::Yellow);
+        // The default palette is a violet-tinted dark theme (all RGB).
+        assert!(matches!(cfg.colors.prompt, Color::Rgb(..)));
+        assert!(matches!(cfg.colors.selected, Color::Rgb(..)));
+        assert!(matches!(cfg.colors.selected_bg, Color::Rgb(..)));
     }
 
     #[test]
@@ -769,6 +804,27 @@ sparkle = "red""#;
         assert_eq!(cfg.window.width, 640);
         assert_eq!(cfg.window.height, 720);
         assert!(cfg.window.transparent);
+        assert_eq!(cfg.window.opacity, 0.85);
+    }
+
+    #[test]
+    fn window_opacity_round_trips_and_is_range_checked() {
+        let cfg = Config::from_toml_str("[window]\nopacity = 0.5\n").unwrap();
+        assert_eq!(cfg.window.opacity, 0.5);
+
+        for bad in ["1.5", "-0.1"] {
+            let err = Config::from_toml_str(&format!("[window]\nopacity = {bad}\n")).unwrap_err();
+            assert!(matches!(err, ConfigError::Validation(_)), "opacity {bad}");
+        }
+    }
+
+    #[test]
+    fn selected_bg_color_parses_and_defaults() {
+        let cfg = Config::from_toml_str("[colors]\nselected_bg = \"#102030\"\n").unwrap();
+        assert_eq!(cfg.colors.selected_bg, Color::Rgb(0x10, 0x20, 0x30));
+        // Omitted → default violet bar.
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg.colors.selected_bg, Config::default().colors.selected_bg);
     }
 
     #[test]
@@ -822,7 +878,7 @@ app_id = "custom"
     fn default_font_has_sensible_values() {
         let cfg = Config::default();
         assert_eq!(cfg.font.path, None);
-        assert_eq!(cfg.font.size, 16.0);
+        assert_eq!(cfg.font.size, 20.0);
     }
 
     #[test]
@@ -861,8 +917,9 @@ size = 18.0
     #[test]
     fn default_colors_have_background_and_foreground() {
         let cfg = Config::default();
-        assert_eq!(cfg.colors.background, Color::Rgb(0x12, 0x12, 0x18));
-        assert_eq!(cfg.colors.foreground, Color::Rgb(0xdc, 0xdc, 0xdc));
+        // Dark, violet-tinted defaults (no pure black/white).
+        assert!(matches!(cfg.colors.background, Color::Rgb(..)));
+        assert!(matches!(cfg.colors.foreground, Color::Rgb(..)));
     }
 
     #[test]
