@@ -1,6 +1,6 @@
 use ratatui::prelude::Rect;
 
-use crate::config::{Config, LayoutMode};
+use crate::domain::config::{Config, LayoutMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutRects {
@@ -79,7 +79,7 @@ pub fn compute(area: Rect, config: &Config) -> LayoutRects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, LayoutConfig, LayoutMode, UiConfig};
+    use crate::domain::config::{Config, LayoutConfig, LayoutMode, UiConfig};
 
     fn config_with_layout(layout: LayoutConfig) -> Config {
         Config {

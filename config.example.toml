@@ -1,6 +1,11 @@
 # Hyprburst config — copy to ~/.config/hyprburst/config.toml (or $XDG_CONFIG_HOME/hyprburst/config.toml)
 # Every field is optional; omitted keys fall back to the built-in defaults.
 # Unknown keys are rejected so typos surface loudly instead of being silently ignored.
+#
+# NOTE: the [terminal] section was removed in hyprburst 0.5 — the launcher now
+# opens its own window instead of re-execing a terminal. A config that still
+# contains [terminal] is rejected; move `terminal.class` to `window.app_id` and
+# delete the rest.
 
 # Colors accept either a named color or a 6-digit hex string ("#RRGGBB").
 #
@@ -9,51 +14,48 @@
 #   gray / grey, darkgray / darkgrey,
 #   light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan,
 #   reset (falls back to your terminal's default foreground)
+# Defaults are a modern dark, violet-tinted palette (shown below as hex).
 [colors]
-# banner   = "magenta"    # ASCII banner
-# prompt   = "cyan"       # search prompt + cursor
-# selected = "yellow"     # highlighted entry in the result list
-# empty    = "yellow"     # "no matches" message
+# banner      = "#c6a0f6"   # ASCII banner
+# prompt      = "#8aadf4"   # search prompt + cursor
+# selected    = "#f2d5ff"   # text of the highlighted entry
+# selected_bg = "#3a2e5a"   # highlight bar behind the selected row
+# empty       = "#9a8cb5"   # "no matches" message
+# background  = "#1a1b26"   # window background / dimming panel (see window.opacity)
+# foreground  = "#c8cce0"   # default text color for unstyled (Reset) text
 
-# Hex example — pick your own palette:
-# banner   = "#ff79c6"
-# prompt   = "#8be9fd"
-# selected = "#f1fa8c"
-# empty    = "#6272a4"
+# Launcher window. All keys are optional.
+[window]
+# Wayland app-id. Change only if you also update legacy hyprlang window rules.
+# app_id = "hyprburst"
 
-# Terminal emulator hyprburst should re-exec into when launched headlessly
-# (e.g. via Hyprland bind). All keys are optional.
-#
-# Resolution order (first match on PATH wins):
-#   1. [terminal.preferred] (this list, in order)
-#   2. $TERMINAL
-#   3. $TERM, then $TERM_PROGRAM
-#   4. x-terminal-emulator (symlink resolved to its real target)
-#   5. Built-in chain: alacritty, wezterm, ghostty, kitty, foot, rio
-[terminal]
-# Ordered list of preferred terminal binaries. First one found on PATH wins.
-# preferred = ["rio", "ghostty"]
+# Placement on Hyprland 0.55+ Lua setups: "fullscreen" full-monitor overlay, or
+# "centered" floating window at width x height.
+# placement = "fullscreen"
 
-# Window class / app-id passed to the terminal so Hyprland windowrules can
-# match (e.g. `windowrule = float, class:^(hyprburst)$`). Defaults to "hyprburst".
-# class = "hyprburst"
+# Centered window size in logical pixels. Must be >= 1.
+# width = 640
+# height = 720
 
-# Per-terminal argv templates. Override a built-in entry or add a new one for
-# a terminal hyprburst doesn't know about. `{class}` and `{cmd}` are substituted
-# at launch time. The template MUST contain `{cmd}` (the hyprburst binary) — if it
-# doesn't, hyprburst prints a warning to stderr and falls back to the built-in
-# default.
-#
-# Built-in defaults (override only if your terminal needs different flags):
-#   alacritty = ["--class={class}", "-e", "{cmd}"]
-#   wezterm   = ["start", "--class={class}", "--", "{cmd}"]
-#   ghostty   = ["--class={class}", "-e", "{cmd}"]
-#   kitty     = ["--class={class}", "{cmd}"]
-#   foot      = ["--app-id={class}", "{cmd}"]
-#   rio       = ["--title={class}", "-e", "{cmd}"]
-#
-# [terminal.flags.cosmic-term]
-# args = ["--class={class}", "-e", "{cmd}"]
+# Keep transparent so Hyprland blur shows through. Set false for an opaque
+# colors.background.
+# transparent = true
+
+# Single opacity knob (0.0-1.0). On Lua Hyprland this becomes compositor opacity
+# with `override`; hyprburst also uses it for the transparent background panel.
+# opacity = 0.85
+
+# The cell font the window rasterizes glyphs from.
+[font]
+# Explicit .ttf/.otf path. When unset, hyprburst auto-picks an installed Nerd
+# Font (so the entry icons render), then falls back to the system monospace, then
+# $HYPRBURST_FONT overrides everything. If your icons show as tofu squares, set
+# this to a *Nerd Font Mono* file (the "Mono" variant keeps icons one cell wide).
+# path = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
+
+# Logical font height in pixels before DPI scaling. Must be > 0. Bump it up if
+# the text looks too small.
+# size = 20.0
 
 # Layout knobs controlling mode, padding, banner centring, and separator line.
 # Defaults use list mode with modest padding, a left-aligned banner, and no
@@ -82,10 +84,9 @@
 # Draw a single-row separator line between the prompt and the result list.
 # separator = false
 
-# UI chrome — banner, prompt, loading polish, paging, icons, selection marker,
-# and cursor glyph. Invalid values (multi-char cursor_char, empty
-# selected_marker, page_size = 0) print a stderr warning and fall back to
-# defaults (page_size = 0 is a hard error).
+# UI chrome — banner, prompt, paging, icons, selection marker, and cursor glyph.
+# Invalid values (multi-char cursor_char, empty selected_marker) print a stderr
+# warning and fall back to defaults (page_size = 0 is a hard error).
 [ui]
 # Multi-line ASCII banner shown above the prompt. Use a TOML multi-line string
 # ("""...""") to preserve newlines. Set to "" to hide the banner.
@@ -104,14 +105,8 @@
 # Number of entries shown per page (PageUp/PageDown step size). Must be >= 1.
 # page_size = 10
 
-# Show a loading message if discovery takes longer than the fast-start grace
-# window and soften the handoff into results. Fast discovery still skips the
-# loading screen entirely. Keep this under [ui]; placing it under [layout]
-# makes the config invalid. Set to false for the most minimal loading UI.
-# loading_polish = true
-
-# Show Nerd Font icons before each app name. Set to false on terminals without
-# a Nerd Font to avoid tofu squares.
+# Show Nerd Font icons before each app name. Set to false if your font lacks
+# Nerd glyphs to avoid tofu squares.
 # show_icons = true
 
 # Prefix drawn on the selected row. Unselected rows get matching spaces so

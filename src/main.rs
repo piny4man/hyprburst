@@ -1,12 +1,12 @@
 use std::io;
-use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::process::ExitCode;
 use std::time::Instant;
 
-use hyprburst::app::App;
-use hyprburst::config::Config;
-use hyprburst::terminal_resolver::{self, Env, ResolveError, SystemPathProbe};
-use hyprburst::{input, terminal};
+use hyprburst::domain::config::Config;
+use hyprburst::gpu::window;
+use hyprburst::system::hyprland;
+use hyprburst::tui::app::App;
+use hyprburst::tui::{input, terminal};
 
 const HELP: &str = "\
 hyprburst — a fast application launcher
@@ -15,17 +15,22 @@ USAGE:
     hyprburst [COMMAND]
 
 COMMANDS:
-    tui       Run the TUI inline in the current terminal (no re-exec)
+    tui       Run the launcher inline in the current terminal (crossterm fallback)
     help      Print this help message
 
 FLAGS:
     -h, --help           Print this help message
+    --measure            Open the window, report cold-start + RSS at first frame, then exit
     --bench-startup      Measure config-load + App::new latency and exit
 
-With no command, hyprburst re-execs into the user's preferred terminal emulator.
+With no command, hyprburst opens its launcher window (GPU-rendered, owns its own
+Wayland surface). Use `hyprburst tui` to run inline in the current terminal.
 ";
 
-fn load_config_for_tui() -> Config {
+/// Load config for the launcher, falling back to defaults (with a stderr note)
+/// if the file is missing or invalid — so a stale config never blocks the
+/// launcher from opening. The note carries the migration hint for removed keys.
+fn load_config() -> Config {
     match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -38,37 +43,23 @@ fn load_config_for_tui() -> Config {
 
 fn bench_startup() -> io::Result<()> {
     let start = Instant::now();
-    let config = load_config_for_tui();
+    let config = load_config();
     let _app = App::new(config);
     let elapsed = start.elapsed();
     println!(
         "hyprburst startup: {:.2}ms",
         elapsed.as_secs_f64() * 1_000.0
     );
-    if let Some(kb) = read_self_rss_kb() {
+    if let Some(kb) = hyprburst::bench::peak_rss_kb() {
         println!("hyprburst peak RSS: {} KB", kb);
     }
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn read_self_rss_kb() -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmHWM:") {
-            return rest.split_whitespace().next().and_then(|n| n.parse().ok());
-        }
-    }
-    None
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_self_rss_kb() -> Option<u64> {
-    None
-}
-
+/// Run the crossterm TUI inline in the current terminal — the fallback for
+/// SSH / no-GPU sessions where the windowed launcher can't open.
 fn run_tui() -> io::Result<()> {
-    let config = load_config_for_tui();
+    let config = load_config();
 
     let mut terminal = terminal::init()?;
     let original_hook = std::panic::take_hook();
@@ -95,57 +86,58 @@ fn run_tui() -> io::Result<()> {
     terminal::restore()
 }
 
-/// Re-exec hyprburst inside the user's preferred terminal emulator.
-///
-/// Loads config, snapshots the environment, resolves the terminal, then
-/// `execvp`s into `<binary> <argv...>`. Only returns on error — on success
-/// the process image is replaced.
-fn run_launch() -> ! {
-    let config = match Config::load() {
-        Ok(cfg) => cfg,
+/// Open the launcher window. `measure` exits right after the first frame with a
+/// cold-start / RSS report.
+fn run_window(measure: bool, start: Instant) -> ExitCode {
+    let config = load_config();
+    if !measure && hyprland::dispatch_configured_launcher(&config) {
+        return ExitCode::SUCCESS;
+    }
+
+    match window::run(config, measure, start) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("hyprburst: config parse failed: {}", err);
-            std::process::exit(1);
-        }
-    };
-
-    let env = Env::from_env();
-    let resolved = match terminal_resolver::resolve(&config, &env, &SystemPathProbe) {
-        Ok(r) => r,
-        Err(err @ ResolveError::NoTerminalFound) => {
             eprintln!("hyprburst: {}", err);
-            std::process::exit(1);
+            ExitCode::FAILURE
         }
-    };
-
-    let err = Command::new(&resolved.binary).args(&resolved.argv).exec();
-    eprintln!(
-        "hyprburst: failed to exec {} {}: {}",
-        resolved.binary,
-        resolved.argv.join(" "),
-        err
-    );
-    std::process::exit(1);
+    }
 }
 
-fn main() -> io::Result<()> {
+fn main() -> ExitCode {
+    let start = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--bench-startup") {
-        return bench_startup();
+        return io_to_exit(bench_startup());
+    }
+
+    if args.iter().any(|a| a == "--measure") {
+        return run_window(true, start);
     }
 
     match args.first().map(String::as_str) {
-        None => run_launch(),
-        Some("tui") => run_tui(),
+        None => run_window(false, start),
+        Some("tui") => io_to_exit(run_tui()),
         Some("help" | "--help" | "-h") => {
             print!("{}", HELP);
-            Ok(())
+            ExitCode::SUCCESS
         }
         Some(other) => {
             eprintln!("hyprburst: unknown command '{}'\n", other);
             eprint!("{}", HELP);
-            std::process::exit(2);
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Map an `io::Result` from a subcommand into a process exit code, printing any
+/// error to stderr.
+fn io_to_exit(result: io::Result<()>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("hyprburst: {}", err);
+            ExitCode::FAILURE
         }
     }
 }

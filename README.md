@@ -2,17 +2,19 @@
 
 A fast, fullscreen application launcher for Arch Linux + Hyprland, written in Rust.
 
-Hyprburst lives inside your terminal emulator with a semi-transparent blurred background, displays apps in a grid with icons, uses hybrid fuzzy/prefix search with recency+frequency scoring, and tracks launch history in SQLite for smart ranking.
+Hyprburst opens its own GPU-rendered window with a semi-transparent blurred background — it owns its Wayland surface, so there's no terminal to spawn or guess. It displays apps in a grid with icons, uses hybrid fuzzy/prefix search with recency+frequency scoring, and tracks launch history in SQLite for smart ranking.
 
 ## Features
 
-- **Modern terminal aesthetic** — Clean monospace, subtle accent colors, custom ASCII art banners
+- **Native GPU window** — winit + OpenGL cell renderer paints the ratatui layout directly; owns its Wayland surface for proper blur/transparency, no terminal needed
+- **Modern aesthetic** — Clean monospace, subtle accent colors, custom ASCII art banners
 - **Fast** — <50ms startup, instant search results as you type
 - **Smart ranking** — Results ranked by recency (exponential decay) + frequency (launch count)
 - **Icon grid** — Apps displayed with monochrome [Nerd Font](https://www.nerdfonts.com/) glyphs matched by category (browser, terminal, editor, etc.)
 - **SQLite history** — Tracks launch history for smarter results and usage stats
-- **TOML config** — Customizable colors, banner, and settings at `~/.config/hyprburst/config.toml`
-- **Hyprland native** — Launches apps via `hyprctl dispatch exec`
+- **TOML config** — Customizable window, font, colors, banner, and layout at `~/.config/hyprburst/config.toml`
+- **Hyprland native** — Launches apps via `hyprctl dispatch` (auto-detects the 0.55+ Lua `hl.dsp` form)
+- **Terminal fallback** — `hyprburst tui` runs the launcher inline in any terminal for SSH / no-GPU sessions
 
 ## Demo
 
@@ -29,21 +31,34 @@ Hyprburst lives inside your terminal emulator with a semi-transparent blurred ba
 ```
 hyprburst/
 ├── src/
-│   ├── main.rs          # Entry point, TUI event loop
-│   ├── app.rs           # Application state and widget rendering
-│   ├── config.rs        # TOML config + XDG path resolution
-│   ├── desktop.rs       # .desktop file discovery and parsing
-│   ├── effects.rs       # Fade-in animation via tachyonfx
-│   ├── history.rs       # SQLite-backed launch history
-│   ├── icon.rs          # Nerd Font glyph mapping by keyword (browser, terminal, editor, ...)
-│   ├── input.rs         # Keyboard input handling and event polling
-│   ├── launcher.rs           # Launcher state, filtering, Hyprland dispatch
-│   ├── layout.rs             # Pure layout geometry (list + grid modes)
-│   ├── search.rs             # Hybrid fuzzy/prefix ranking
-│   ├── terminal.rs           # Terminal lifecycle (raw mode, alternate screen, panic restore)
-│   └── terminal_resolver.rs  # Deterministic host-terminal resolution for bare `hyprburst`
+│   ├── main.rs            # Entry point: window launch, `tui` fallback, bench modes
+│   ├── lib.rs             # Module tree (domain / view / gpu / tui / system / bench)
+│   ├── bench.rs           # Footprint probes for `--measure` / `--bench-startup`
+│   ├── domain/            # Frontend-agnostic state + data (no rendering)
+│   │   ├── launcher_core.rs # Launcher state machine
+│   │   ├── config.rs       # TOML config + XDG path resolution
+│   │   ├── search.rs       # Hybrid fuzzy/prefix ranking
+│   │   ├── history.rs      # SQLite-backed launch history
+│   │   ├── icon.rs         # Nerd Font glyph mapping by keyword (browser, editor, ...)
+│   │   └── desktop.rs      # .desktop file discovery and parsing
+│   ├── view/             # Shared ratatui-buffer painting (both frontends)
+│   │   ├── render.rs       # render_core: paints the launcher into a Buffer
+│   │   └── layout.rs       # Pure layout geometry (list + grid modes)
+│   ├── gpu/              # GPU window frontend (the default `hyprburst`)
+│   │   ├── window.rs       # winit + glutin + glow cell renderer; GL-native fade-in
+│   │   ├── grid.rs         # Cell metrics, glyph atlas, grid geometry
+│   │   └── font.rs         # Cell-font resolution (config / $HYPRBURST_FONT / Nerd Font)
+│   ├── tui/              # Crossterm/ratatui fallback frontend (`hyprburst tui`)
+│   │   ├── launcher.rs     # Launcher widget + crossterm key mapping
+│   │   ├── app.rs          # TUI application state and event loop
+│   │   ├── input.rs        # Keyboard input handling and event polling
+│   │   ├── terminal.rs     # Terminal lifecycle (raw mode, panic restore)
+│   │   └── effects.rs      # Fade-in animation via tachyonfx (TUI only)
+│   └── system/
+│       └── hyprland.rs     # hyprctl dispatch (legacy + 0.55+ Lua `hl.dsp` forms)
 ├── packaging/
-│   └── hyprburst.conf   # Drop-in Hyprland config: windowrules + Super+Space bind
+│   ├── hyprburst.conf   # Legacy hyprlang drop-in: static windowrules + bind
+│   └── hyprburst.lua    # Hyprland 0.55+ Lua bind; placement lives in TOML
 ├── .github/workflows/
 │   └── ci.yml           # Pull request CI: fmt, clippy, tests
 ├── Cargo.toml
@@ -52,10 +67,10 @@ hyprburst/
 
 ## Requirements
 
-- **OS** — Linux with [Hyprland](https://hyprland.org/). Hyprburst dispatches launches through `hyprctl`, so it expects a running Hyprland session for the full overlay experience.
-- **Hyprland 0.48+** — the shipped windowrules use the unified `windowrule` syntax (`windowrulev2` is deprecated).
-- **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. The hosting terminal must use a [Nerd Font](https://www.nerdfonts.com/) (e.g. `JetBrainsMono Nerd Font`, `FiraCode Nerd Font`, `Symbols Nerd Font`) or the icons will show as tofu squares.
-- **A terminal emulator** — bare `hyprburst` re-execs into one (see [Terminal resolution](#terminal-resolution)). Any of `alacritty`, `wezterm`, `ghostty`, `kitty`, `foot`, or `rio` works out of the box.
+- **OS** — Linux with [Hyprland](https://hyprland.org/) (a Wayland session). Hyprburst opens its own GPU window and dispatches launches through `hyprctl`, so it expects a running Hyprland session.
+- **OpenGL** — the launcher window is rendered with OpenGL via your GPU driver (Mesa or vendor). Virtually every Hyprland-capable machine already has this.
+- **Hyprland 0.55+ recommended** — use the Lua bind snippet and configure placement/opacity in `~/.config/hyprburst/config.toml`. Legacy Hyprland 0.48–0.54 / `hyprland.conf` setups can use the shipped hyprlang `hyprburst.conf` with unified `windowrule` syntax.
+- **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. It auto-picks an installed [Nerd Font](https://www.nerdfonts.com/) (a *Mono* variant preferred); if none is installed, the icons show as tofu squares — install one (e.g. `JetBrainsMono Nerd Font`) or set `[font] path` / `$HYPRBURST_FONT` to one.
 
 ## Install
 
@@ -85,9 +100,9 @@ cargo install hyprburst
 paru -S hyprburst   # or: yay -S hyprburst
 ```
 
-The `PKGBUILD` lives at [`packaging/aur/`](packaging/aur/) — it builds the published crate from source and installs the binary, the drop-in Hyprland config, and the example config. See its [README](packaging/aur/README.md) to build or publish it yourself.
+The `PKGBUILD` lives at [`packaging/aur/`](packaging/aur/) — it builds the published crate from source and installs the binary, both Hyprland snippets, and the example config. See its [README](packaging/aur/README.md) to build or publish it yourself.
 
-After installing, drop in the Hyprland config (see [Hyprland Setup](#hyprland-setup)) and bind a key to `hyprburst`.
+After installing, add the matching Hyprland snippet (see [Hyprland Setup](#hyprland-setup)).
 
 ## Usage
 
@@ -95,16 +110,59 @@ Hyprburst exposes a single binary with a tiny command surface. Run `hyprburst he
 
 | Command | What it does |
 |---------|--------------|
-| `hyprburst` | Re-execs into your preferred terminal emulator and runs the launcher inside it. This is what the `Super+Space` Hyprland bind invokes — it works from a graphical context with no controlling terminal. See [Terminal resolution](#terminal-resolution). |
-| `hyprburst tui` | Runs the launcher TUI **inline** in the current terminal, with no re-exec. Handy for testing the UI from a shell without going through Hyprland. |
+| `hyprburst` | Opens the GPU-rendered launcher **window**. It owns its own Wayland surface, so it works from a graphical context with no controlling terminal — this is what the `Super+Space` Hyprland bind invokes. |
+| `hyprburst tui` | Runs the launcher **inline** in the current terminal (crossterm), with no window. The fallback for SSH / no-GPU sessions, and handy for testing the UI from a shell. |
 | `hyprburst help` (`-h`, `--help`) | Prints the usage summary and exits. |
+| `hyprburst --measure` | Opens the window, prints cold-start latency + peak RSS at the first frame, then exits. |
 | `hyprburst --bench-startup` | Times the cold startup path (config load + app init), prints peak RSS, and exits without opening the UI. See [Performance](#performance). |
 
 Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `Enter` to launch the selected app, `Escape` to close.
 
 ## Hyprland Setup
 
-Hyprburst is a terminal UI, so the Hyprland window class belongs to the terminal that hosts it. A ready-to-use config lives at [`packaging/hyprburst.conf`](packaging/hyprburst.conf) — it contains the windowrules that target the `hyprburst` class and a `Super+Space` bind that runs `hyprburst`, which resolves a terminal and re-execs itself inside it with the right class flag. (Use `hyprburst tui` if you want to run inline in the current terminal instead.)
+Hyprburst opens its own Wayland window with app-id `hyprburst`; it does not run inside a terminal. Install one small Hyprland snippet, then customize behavior in `~/.config/hyprburst/config.toml`.
+
+Pick the snippet matching your Hyprland config format. Hyprland loads `hyprland.lua` if present, otherwise `hyprland.conf`; the two formats cannot be mixed.
+
+- **Lua** (Hyprland 0.55+ with `hyprland.lua`): [`packaging/hyprburst.lua`](packaging/hyprburst.lua)
+- **hyprlang** (legacy Hyprland 0.48–0.54, or any `hyprland.conf` setup): [`packaging/hyprburst.conf`](packaging/hyprburst.conf)
+
+On Hyprland 0.55+ Lua configs, the snippet only binds the key. Placement and opacity come from Hyprburst's TOML config.
+
+### Lua (`hyprburst.lua`, Hyprland 0.55+)
+
+```sh
+install -Dm644 packaging/hyprburst.lua ~/.config/hypr/hyprburst.lua
+# then add to ~/.config/hypr/hyprland.lua:
+#   dofile(os.getenv("HOME") .. "/.config/hypr/hyprburst.lua")
+```
+
+```lua
+hl.bind("SUPER + Space", hl.dsp.exec_cmd("hyprburst"))
+```
+
+### Configure Placement
+
+For current Lua setups, use `~/.config/hyprburst/config.toml`:
+
+```toml
+[window]
+placement = "fullscreen" # or "centered"
+opacity = 0.85
+```
+
+`fullscreen` is the default full-monitor overlay. `centered` uses `[window] width` and `[window] height`.
+
+Hyprburst translates those settings into launch-time Lua rules:
+
+| Placement | Hyprland behavior |
+|-----------|-------------------|
+| `fullscreen` | `float`, `pin`, `stay_focused`, `size = { "monitor_w", "monitor_h" }`, `move = { 0, 0 }`, `opacity = "... override"` |
+| `centered` | `float`, `pin`, `stay_focused`, `size = { window.width, window.height }`, `center = true` |
+
+Hyprburst is still a normal Wayland window. `pin` and focus rules keep it above normal app windows, but layer-shell surfaces such as top-layer Waybar can still draw above it.
+
+### hyprlang (`hyprburst.conf`, legacy)
 
 ```sh
 # Drop the config next to hyprland.conf and source it.
@@ -112,25 +170,22 @@ install -Dm644 packaging/hyprburst.conf ~/.config/hypr/hyprburst.conf
 echo 'source = ~/.config/hypr/hyprburst.conf' >> ~/.config/hypr/hyprland.conf
 ```
 
-The rules inside:
-
 ```ini
-# Requires Hyprland 0.48+ (unified `windowrule`; `windowrulev2` is deprecated).
+# Requires Hyprland 0.48-0.54 (unified `windowrule`; `windowrulev2` is deprecated).
 windowrule = match:class ^(hyprburst)$, float on
+windowrule = match:class ^(hyprburst)$, pin on
 windowrule = match:class ^(hyprburst)$, size (monitor_w) (monitor_h)
 windowrule = match:class ^(hyprburst)$, move 0 0
-windowrule = match:class ^(hyprburst)$, opacity 0.9 0.8
+windowrule = match:class ^(hyprburst)$, opacity 0.9 0.9
 windowrule = match:class ^(hyprburst)$, border_size 0
 windowrule = match:class ^(hyprburst)$, no_shadow on
 windowrule = match:class ^(hyprburst)$, stay_focused on
 windowrule = match:class ^(hyprburst)$, dim_around on
 
 bind = SUPER, Space, exec, hyprburst
-
-# env = TERMINAL,rio
 ```
 
-The `size (monitor_w) (monitor_h)` and `move 0 0` rules make hyprburst a full-monitor floating overlay without putting the client into real fullscreen. This matters for transparent terminals: the windows behind hyprburst stay visible for opacity and blur effects. The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to the transparent regions as long as `decoration:blur:enabled = true` is set globally — terminals render on a transparent-capable background so the blur shows through. `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while hyprburst is open.
+The legacy hyprlang file keeps static rules because old hyprlang configs cannot use the Lua `hl.dsp.exec_cmd("hyprburst", rules)` launch-time rule path. On current Hyprland Lua configs, prefer the minimal Lua bind plus TOML placement above.
 
 If Waybar renders above hyprburst, set Waybar's own config to `"layer": "bottom"` and restart Waybar:
 
@@ -140,70 +195,35 @@ If Waybar renders above hyprburst, set Waybar's own config to `"layer": "bottom"
 }
 ```
 
-Waybar is a layer-shell surface, so a normal floating window rule cannot draw above it while Waybar remains on the `top` layer.
+Waybar is a layer-shell surface, so a normal window cannot draw above it while Waybar remains on the `top` layer.
 
-Hyprburst renders a fade-in animation on open (configurable timing lives in `src/effects.rs`). Escape closes the overlay.
+Hyprburst fades in on open. `Escape` closes the overlay.
 
-### Upgrading from earlier versions
+### Upgrading from 0.4.x
 
-> **Hard break — the `launch` subcommand is gone.** Running bare `hyprburst` now re-execs into the resolved terminal (previously: `hyprburst launch`), and `hyprburst tui` runs inline in the current terminal (previously: bare `hyprburst`). Update your Hyprland bind to `bind = SUPER, Space, exec, hyprburst` or the launcher will fail when invoked from a graphical context with no controlling terminal.
+> **Hard break — hyprburst no longer spawns a terminal.** Bare `hyprburst` now opens its **own GPU window** instead of re-execing into a resolved terminal emulator. The `[terminal]` config section (`preferred`, `class`, `flags`) and the terminal-resolution logic are **gone**; a config that still contains `[terminal]` is rejected with a migration hint on stderr. To migrate: move `terminal.class` to `window.app_id` (if you customized it) and delete the rest of `[terminal]`. The `Super+Space` bind (`bind = SUPER, Space, exec, hyprburst`) is unchanged. `hyprburst tui` still runs inline in the current terminal as a fallback.
 
-## Terminal resolution
+## Window and font
 
-Bare `hyprburst` picks the terminal to host the TUI deterministically. First match wins:
+The launcher window and cell font are configured under `[window]` and `[font]` in `~/.config/hyprburst/config.toml`.
 
-1. `terminal.preferred` in your config — each name, in order, is probed on `PATH`.
-2. `$TERMINAL` if it's set and on `PATH`.
-3. `$TERM`, then `$TERM_PROGRAM` (skipped if empty).
-4. `x-terminal-emulator` (symlink-resolved to its real target, e.g. Debian's alternatives system).
-5. The built-in fallback chain: `alacritty → wezterm → ghostty → kitty → foot → rio` (first found wins).
-
-If none of those resolve, `hyprburst` exits with a non-zero status and an error on stderr naming the built-in chain.
-
-The `[terminal]` config section controls the first step and the invocation flags for each known emulator:
+### `[window]`
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `terminal.preferred` | array of strings | `[]` | Ordered preference list. First entry found on `PATH` wins over `$TERMINAL` and every fallback. |
-| `terminal.class` | string | `"hyprburst"` | Substituted into the `{class}` placeholder inside every flag template. Must be non-empty. |
-| `terminal.flags.<name>.args` | array of strings | built-in table | Argv template for emulator `<name>`. Two placeholders are recognised: `{class}` (→ `terminal.class`) and `{cmd}` (→ `hyprburst`). `{cmd}` is required — templates missing it are rejected with a warning and fall back to the built-in. |
+| `window.app_id` | string | `"hyprburst"` | Wayland app-id. Change only if you know why; legacy hyprlang rules must match it. |
+| `window.placement` | string | `"fullscreen"` | `"fullscreen"` for full-monitor overlay, `"centered"` for a centered floating window. |
+| `window.width` | integer | `640` | Centered window width. Must be `>= 1`. |
+| `window.height` | integer | `720` | Centered window height. Must be `>= 1`. |
+| `window.transparent` | bool | `true` | Keep transparent for Hyprland blur. Set `false` for an opaque `colors.background`. |
+| `window.opacity` | float | `0.85` | Single opacity knob. On Lua Hyprland it is sent as compositor opacity with `override`; hyprburst also uses it for the transparent background panel. |
 
-The built-in flag table:
+### `[font]`
 
-```toml
-[terminal.flags.alacritty]
-args = ["--class={class}", "-e", "{cmd}"]
-
-[terminal.flags.wezterm]
-args = ["start", "--class={class}", "--", "{cmd}"]
-
-[terminal.flags.ghostty]
-args = ["--class={class}", "-e", "{cmd}"]
-
-[terminal.flags.kitty]
-args = ["--class={class}", "{cmd}"]
-
-[terminal.flags.foot]
-args = ["--app-id={class}", "{cmd}"]
-
-[terminal.flags.rio]
-args = ["--title={class}", "-e", "{cmd}"]
-```
-
-Any emulator not listed here falls back to `-e {cmd}`, which works for most xterm-style terminals but means the window class may not match the rules above — add an entry under `[terminal.flags.<your-term>]` to fix that.
-
-### Example: pin rio with a custom class
-
-```toml
-[terminal]
-preferred = ["rio", "ghostty"]
-class = "my-launcher"
-
-[terminal.flags.rio]
-args = ["--title={class}", "-e", "{cmd}"]
-```
-
-Remember to update the windowrules in `hyprburst.conf` to match the new class (e.g. `match:class ^(my-launcher)$`).
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `font.path` | string | unset | Explicit `.ttf`/`.otf` path for the cell font. When unset, hyprburst auto-picks an installed **Nerd Font** (so icons render), falling back to the system monospace (`fc-match monospace`); `$HYPRBURST_FONT` overrides everything. If icons show as tofu, point this at a *Nerd Font Mono* file. |
+| `font.size` | float | `20.0` | Logical font height in pixels (before DPI scaling). The cell size is derived from the font's metrics at this size. Bump it up if text looks too small. |
 
 ## Customizing the look
 
@@ -227,17 +247,10 @@ Two sections cover everything about how hyprburst renders on screen: `[layout]` 
 | `ui.banner` | string | built-in ASCII "hyprburst" | Multi-line TOML string (`"""..."""`). Empty string hides the banner. |
 | `ui.prompt` | string | `"> "` | Printed before the search cursor. |
 | `ui.page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
-| `ui.show_icons` | bool | `true` | Draw a Nerd Font glyph before each app. Disable on non-Nerd-Font terminals. |
+| `ui.show_icons` | bool | `true` | Draw a Nerd Font glyph before each app. Disable if your font lacks Nerd glyphs. |
 | `ui.selected_marker` | string | `"> "` | Prefix drawn on the selected row. Empty string falls back to the default. |
 | `ui.cursor_char` | string | `"█"` | Single-character cursor glyph after the prompt. Non-single-grapheme values fall back to the default. |
 | `ui.show_cursor` | bool | `true` | Draw the cursor glyph at all. |
-| `ui.loading_polish` | bool | `true` | Show a loading message while discovery is still running and smooth the handoff into results. Set to `false` for the most minimal loading screen. |
-
-### Loading behavior
-
-Hyprburst starts application discovery immediately. If discovery finishes within the fast-start grace window, the launcher opens directly to the results and skips the loading screen entirely. If discovery takes longer, hyprburst keeps the prompt responsive, shows a short loading message, and carries any typed query into the results when discovery completes.
-
-With `ui.loading_polish = true`, the transition from loading to results is softened visually. Result updates after typing also transition only within the result area so the prompt and surrounding layout stay readable. Set `ui.loading_polish = false` under `[ui]` to hide the loading message and skip the loading-to-results polish while keeping startup behavior unchanged. If it is placed under `[layout]`, the config is invalid and hyprburst falls back to built-in defaults.
 
 ### Worked example: centered grid with breathing room
 
@@ -262,18 +275,9 @@ prompt   = "light-cyan"
 selected = "#ffb86c"
 ```
 
-## Environment variables (via Hyprland)
+## Environment variables
 
-Hyprburst reads **exactly one environment variable** in v1: `$TERMINAL`. Every other knob lives in `~/.config/hyprburst/config.toml`. `$TERM` and `$TERM_PROGRAM` are consulted only as fallbacks during terminal resolution (see above) and have no effect on the TUI itself.
-
-If you want to pin hyprburst's host terminal without touching your shell rc, set `env` in Hyprland so the variable is exported to every process Hyprland spawns:
-
-```ini
-# ~/.config/hypr/hyprland.conf — or inside hyprburst.conf
-env = TERMINAL,rio
-```
-
-For a project-scoped alternative, `terminal.preferred` in the config file wins over `$TERMINAL` anyway, so you can skip the env var entirely when you have a config file.
+Hyprburst reads `$HYPRBURST_FONT`, an optional path to a `.ttf`/`.otf` to use as the window's cell font (it overrides `fc-match`, and is itself overridden by `[font] path` in the config). The window launcher uses `$HYPRBURST_CHILD` internally to avoid relaunch loops when applying Hyprland Lua launch rules. Everything else lives in `~/.config/hyprburst/config.toml`. App launches are dispatched through `hyprctl`, which auto-detects the Hyprland dispatch form; set `HYPRBURST_DISPATCH=lua|legacy` to force it if detection ever misfires.
 
 ## Config
 
@@ -288,14 +292,17 @@ cp config.example.toml ~/.config/hyprburst/config.toml
 
 ### Fields
 
-The `[ui]`, `[layout]`, and `[terminal]` sections are documented in [Customizing the look](#customizing-the-look) and [Terminal resolution](#terminal-resolution). The remaining section controls colors:
+The `[window]` and `[font]` sections are documented in [Window and font](#window-and-font); `[ui]` and `[layout]` in [Customizing the look](#customizing-the-look). The remaining section controls colors:
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `colors.banner` | color | `magenta` | ASCII banner color. |
-| `colors.prompt` | color | `cyan` | Prompt + cursor color. |
-| `colors.selected` | color | `yellow` | Highlighted entry in the result list. |
-| `colors.empty` | color | `yellow` | "No matches" message color. |
+| `colors.banner` | color | `#c6a0f6` | ASCII banner color. |
+| `colors.prompt` | color | `#8aadf4` | Prompt + cursor color. |
+| `colors.selected` | color | `#f2d5ff` | Text of the highlighted entry. |
+| `colors.selected_bg` | color | `#3a2e5a` | Highlight bar drawn behind the selected row. |
+| `colors.empty` | color | `#9a8cb5` | "No matches" message color. |
+| `colors.background` | color | `#1a1b26` | Window background — painted opaque when `window.transparent = false`, and as the dimming panel (at `window.opacity`) when `transparent = true`. |
+| `colors.foreground` | color | `#c8cce0` | Default text color for unstyled launcher text (the Reset color). |
 
 ### Color values
 
@@ -313,7 +320,6 @@ padding_vertical = 0
 [ui]
 prompt = "λ "
 page_size = 8
-loading_polish = false
 
 [colors]
 banner   = "#ff79c6"
@@ -355,7 +361,7 @@ Press `Escape` to close.
 
 ## Performance
 
-Hyprburst is tuned for instant launch. The release profile enables `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`, and `panic = "abort"` (see [`Cargo.toml`](Cargo.toml)) to minimize binary size and cold-start latency. Loading polish is cosmetic only; keep using the startup benchmark to catch discovery, config, or history regressions that a smoother handoff could otherwise make less obvious.
+Hyprburst is tuned for instant launch. The release profile enables `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`, and `panic = "abort"` (see [`Cargo.toml`](Cargo.toml)) to minimize binary size and cold-start latency. Use the startup benchmark to catch discovery, config, or history regressions, and `hyprburst --measure` to capture window time-to-first-frame.
 
 Measure startup end-to-end on your machine:
 
@@ -377,19 +383,23 @@ CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startu
 
 ## Troubleshooting
 
-**Icons show as tofu squares (□).** The hosting terminal isn't using a Nerd Font. Switch the terminal to a [Nerd Font](https://www.nerdfonts.com/), or set `ui.show_icons = false` to drop icons entirely.
+**Icons show as tofu squares (□).** No Nerd Font is installed for hyprburst to auto-pick. Install a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font` (the *Mono* variant keeps icons one cell wide), or point `[font] path` (or `$HYPRBURST_FONT`) at one, or set `ui.show_icons = false` to drop icons entirely.
 
-**`hyprburst` exits with "no terminal found".** Bare `hyprburst` couldn't resolve a terminal to host the TUI. Install one of the built-in fallbacks (`alacritty`, `wezterm`, `ghostty`, `kitty`, `foot`, `rio`), set `$TERMINAL`, or add `terminal.preferred` to your config. See [Terminal resolution](#terminal-resolution).
+**Text is too small.** Raise `[font] size` (default `20.0`).
 
-**The launcher opens in the wrong place / isn't fullscreen.** The Hyprland windowrules target the `hyprburst` class. If you changed `terminal.class` in your config, update the `match:class ^(hyprburst)$` rules to match. If you skipped the config entirely, copy [`packaging/hyprburst.conf`](packaging/hyprburst.conf) as shown in [Hyprland Setup](#hyprland-setup).
+**The window doesn't open / `hyprburst` exits with a font or display error.** It needs a Wayland session with OpenGL. From an SSH or no-GPU session, run `hyprburst tui` instead (inline crossterm UI). If it can't find a font, set `[font] path`.
+
+**The launcher opens in the wrong place / isn't fullscreen.** On Hyprland 0.55+ Lua configs, install the minimal [`packaging/hyprburst.lua`](packaging/hyprburst.lua) bind and set `[window] placement` in `~/.config/hyprburst/config.toml`. Use `"fullscreen"` for the full-monitor overlay or `"centered"` for a centered floating window. Legacy hyprlang users still rely on static rules in [`packaging/hyprburst.conf`](packaging/hyprburst.conf).
 
 **Waybar (or another bar) renders on top of hyprburst.** Waybar is a layer-shell surface on the `top` layer, which a normal floating window can't cover. Set Waybar's config to `"layer": "bottom"` and restart it — details in [Hyprland Setup](#hyprland-setup).
 
-**Background blur / transparency doesn't show.** Hyprburst relies on the host terminal being transparent and Hyprland's `decoration:blur:enabled = true` being set globally. The `opacity 0.9 0.8` windowrule only affects hyprburst's own window.
+**Background blur / transparency doesn't show.** Keep `[window] transparent = true` (the default) and set Hyprland's `decoration:blur:enabled = true` globally. `[window] opacity` controls both Hyprland compositor opacity on Lua setups and the panel hyprburst paints inside its transparent surface.
 
-**`Super+Space` does nothing.** Confirm the bind sources correctly (`bind = SUPER, Space, exec, hyprburst`) and that `hyprburst` is on the `PATH` Hyprland sees. Note the bind runs bare `hyprburst`, **not** `hyprburst tui` — the latter needs an existing controlling terminal.
+**The launcher looks too see-through / the blur washes out the text.** Raise `[window] opacity` (default `0.85`) toward `1.0` to dim more of the blur behind the launcher; `1.0` makes the background panel fully opaque.
 
-**My config isn't taking effect.** An invalid config is rejected and hyprburst falls back to built-in defaults, printing the reason to stderr. Run `hyprburst tui` from a shell to see the message, then fix the named field. Common gotchas: `loading_polish` must live under `[ui]` (not `[layout]`), and unknown keys are hard errors. See [Validation](#validation).
+**`Super+Space` does nothing.** Confirm the bind sources/loads correctly (`bind = SUPER, Space, exec, hyprburst`, or the Lua `hl.bind(...)`) and that `hyprburst` is on the `PATH` Hyprland sees.
+
+**My config isn't taking effect.** An invalid config is rejected and hyprburst falls back to built-in defaults, printing the reason to stderr. Run `hyprburst tui` from a shell to see the message, then fix the named field. Note: the `[terminal]` section was removed in 0.5 and now errors — see [Upgrading from 0.4.x](#upgrading-from-04x). Unknown keys are hard errors. See [Validation](#validation).
 
 ## License
 

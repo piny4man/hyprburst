@@ -1,8 +1,8 @@
 [package]
 name = "hyprburst"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
-description = "Fast fullscreen terminal application launcher for Arch Linux and Hyprland"
+description = "Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/piny4man/hyprburst"
 readme = "README.md"
@@ -20,17 +20,31 @@ include = [
     "SECURITY.md",
     "config.example.toml",
     "packaging/hyprburst.conf",
+    "packaging/hyprburst.lua",
     "src/**",
     "tests/**",
 ]
 
 [dependencies]
 ratatui = "0.30"
+# crossterm backs the `hyprburst tui` fallback (inline launcher for SSH / no-GPU).
 crossterm = "0.29"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tachyonfx = "0.25"
+
+# The windowed launcher owns its own Wayland surface and paints the ratatui
+# `Buffer` from `render_core` directly through a hand-written GL cell renderer —
+# no Skia, no terminal-emulator round-trip, no PTY. winit drives the event loop;
+# glutin/glutin-winit create the GL context/surface; glow is the GL binding;
+# ab_glyph rasterizes glyphs; raw-window-handle bridges winit ↔ glutin.
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+glow = "0.16"
+ab_glyph = "0.2"
+raw-window-handle = "0.6"
 
 [profile.release]
 opt-level = 3

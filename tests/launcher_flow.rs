@@ -2,8 +2,8 @@
 //! render it to a `Buffer`, asserting on the resulting frame just like a user
 //! interacting with the launcher would see it.
 
-use hyprburst::app::App;
-use hyprburst::config::{Config, UiConfig};
+use hyprburst::domain::config::{Config, UiConfig};
+use hyprburst::tui::app::App;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;

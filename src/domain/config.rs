@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +14,15 @@ const DEFAULT_BANNER: &str = "\
 
 const DEFAULT_PROMPT: &str = "> ";
 const DEFAULT_PAGE_SIZE: usize = 10;
+pub(crate) const DEFAULT_APP_ID: &str = "hyprburst";
+pub(crate) const DEFAULT_WINDOW_WIDTH: u32 = 640;
+pub(crate) const DEFAULT_WINDOW_HEIGHT: u32 = 720;
+pub(crate) const DEFAULT_FONT_SIZE: f32 = 20.0;
+/// Opacity of the background panel painted behind the launcher when the surface
+/// is transparent: `1.0` fully hides Hyprland's blur, lower values let more of it
+/// through. Dims the blur so text stays legible instead of floating on a raw
+/// wallpaper.
+pub(crate) const DEFAULT_WINDOW_OPACITY: f32 = 0.85;
 pub(crate) const MAX_PADDING: u16 = 32;
 pub(crate) const DEFAULT_SELECTED_MARKER: &str = "> ";
 pub(crate) const DEFAULT_CURSOR_CHAR: &str = "█";
@@ -25,9 +33,67 @@ pub(crate) const DEFAULT_PADDING_VERTICAL: u16 = 2;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
     pub colors: Colors,
-    pub terminal: TerminalConfig,
+    pub window: WindowConfig,
+    pub font: FontConfig,
     pub layout: LayoutConfig,
     pub ui: UiConfig,
+}
+
+/// The launcher window: its Wayland app-id (which the Hyprland windowrules
+/// match), initial size, and whether the surface is transparent so Hyprland's
+/// blur shows through.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowConfig {
+    pub app_id: String,
+    pub width: u32,
+    pub height: u32,
+    pub placement: WindowPlacement,
+    pub transparent: bool,
+    /// Opacity (`0.0`–`1.0`) of the background panel painted behind the launcher
+    /// when `transparent = true` — dims Hyprland's blur so text stays legible.
+    /// Ignored when `transparent = false` (the surface is already opaque).
+    pub opacity: f32,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            app_id: DEFAULT_APP_ID.to_string(),
+            width: DEFAULT_WINDOW_WIDTH,
+            height: DEFAULT_WINDOW_HEIGHT,
+            placement: WindowPlacement::default(),
+            transparent: true,
+            opacity: DEFAULT_WINDOW_OPACITY,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WindowPlacement {
+    /// Floating window sized to the monitor and moved to the top-left. This keeps
+    /// blur-friendly overlay behavior without asking the client to fullscreen.
+    #[default]
+    Fullscreen,
+    /// Floating window centered at `window.width` x `window.height`.
+    Centered,
+}
+
+/// The cell font the window rasterizes glyphs from. `path` is an explicit
+/// `.ttf`/`.otf`; when `None` the system monospace (`fc-match`) is used. `size`
+/// is the logical pixel height before DPI scaling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontConfig {
+    pub path: Option<String>,
+    pub size: f32,
+}
+
+impl Default for FontConfig {
+    fn default() -> Self {
+        Self {
+            path: None,
+            size: DEFAULT_FONT_SIZE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,14 +142,14 @@ pub struct Colors {
     pub banner: Color,
     pub prompt: Color,
     pub selected: Color,
+    /// Background highlight bar drawn behind the selected row.
+    pub selected_bg: Color,
     pub empty: Color,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TerminalConfig {
-    pub preferred: Vec<String>,
-    pub class: String,
-    pub flags: BTreeMap<String, Vec<String>>,
+    /// Window background — painted opaque when `window.transparent = false`, and
+    /// as the dimming panel (at `window.opacity`) when `transparent = true`.
+    pub background: Color,
+    /// Default text color for the unstyled (Reset) launcher text.
+    pub foreground: Color,
 }
 
 impl Default for UiConfig {
@@ -100,43 +166,18 @@ impl Default for UiConfig {
     }
 }
 
-impl Default for TerminalConfig {
-    fn default() -> Self {
-        Self {
-            preferred: Vec::new(),
-            class: "hyprburst".to_string(),
-            flags: builtin_flags(),
-        }
-    }
-}
-
-pub(crate) fn builtin_flags() -> BTreeMap<String, Vec<String>> {
-    let entries: &[(&str, &[&str])] = &[
-        ("alacritty", &["--class={class}", "-e", "{cmd}"]),
-        ("wezterm", &["start", "--class={class}", "--", "{cmd}"]),
-        ("ghostty", &["--class={class}", "-e", "{cmd}"]),
-        ("kitty", &["--class={class}", "{cmd}"]),
-        ("foot", &["--app-id={class}", "{cmd}"]),
-        ("rio", &["--title={class}", "-e", "{cmd}"]),
-    ];
-    entries
-        .iter()
-        .map(|(name, args)| {
-            (
-                (*name).to_string(),
-                args.iter().map(|s| (*s).to_string()).collect(),
-            )
-        })
-        .collect()
-}
-
 impl Default for Colors {
     fn default() -> Self {
+        // A modern dark, violet-tinted palette (no pure black/white), all
+        // overridable in `[colors]`.
         Self {
-            banner: Color::Magenta,
-            prompt: Color::Cyan,
-            selected: Color::Yellow,
-            empty: Color::Yellow,
+            banner: Color::Rgb(0xc6, 0xa0, 0xf6),      // lavender
+            prompt: Color::Rgb(0x8a, 0xad, 0xf4),      // periwinkle
+            selected: Color::Rgb(0xf2, 0xd5, 0xff),    // bright violet-white
+            selected_bg: Color::Rgb(0x3a, 0x2e, 0x5a), // muted violet bar
+            empty: Color::Rgb(0x9a, 0x8c, 0xb5),       // muted lilac
+            background: Color::Rgb(0x1a, 0x1b, 0x26),  // dark slate-violet
+            foreground: Color::Rgb(0xc8, 0xcc, 0xe0),  // soft light
         }
     }
 }
@@ -194,8 +235,19 @@ impl Config {
     /// recoverable issues (e.g. an invalid terminal flag template) that fall
     /// back to defaults rather than aborting the load.
     pub fn from_toml_str_validating(contents: &str) -> Result<(Self, Vec<String>), ConfigError> {
-        let raw: RawConfig =
-            toml::from_str(contents).map_err(|e| ConfigError::Parse(e.message().to_string()))?;
+        let raw: RawConfig = toml::from_str(contents).map_err(|e| {
+            let msg = e.message().to_string();
+            if msg.contains("terminal") {
+                ConfigError::Parse(format!(
+                    "{msg}\n\nThe [terminal] section was removed in hyprburst 0.5: the launcher \
+                     now opens its own window instead of re-execing a terminal. Move \
+                     `terminal.class` to `window.app_id`, drop `terminal.preferred`/`terminal.flags`, \
+                     and see config.example.toml for the new [window]/[font] options."
+                ))
+            } else {
+                ConfigError::Parse(msg)
+            }
+        })?;
         raw.into_config()
     }
 }
@@ -218,7 +270,8 @@ pub fn default_path() -> PathBuf {
 #[serde(default, deny_unknown_fields)]
 struct RawConfig {
     colors: RawColors,
-    terminal: RawTerminal,
+    window: RawWindow,
+    font: RawFont,
     layout: RawLayout,
     ui: RawUi,
 }
@@ -252,21 +305,28 @@ struct RawColors {
     banner: Option<String>,
     prompt: Option<String>,
     selected: Option<String>,
+    selected_bg: Option<String>,
     empty: Option<String>,
+    background: Option<String>,
+    foreground: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct RawTerminal {
-    preferred: Option<Vec<String>>,
-    class: Option<String>,
-    flags: Option<BTreeMap<String, RawFlagEntry>>,
+struct RawWindow {
+    app_id: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    placement: Option<String>,
+    transparent: Option<bool>,
+    opacity: Option<f32>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawFlagEntry {
-    args: Vec<String>,
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawFont {
+    path: Option<String>,
+    size: Option<f32>,
 }
 
 impl RawConfig {
@@ -283,14 +343,120 @@ impl RawConfig {
                     "colors.selected",
                     defaults.colors.selected,
                 )?,
+                selected_bg: resolve_color(
+                    self.colors.selected_bg,
+                    "colors.selected_bg",
+                    defaults.colors.selected_bg,
+                )?,
                 empty: resolve_color(self.colors.empty, "colors.empty", defaults.colors.empty)?,
+                background: resolve_color(
+                    self.colors.background,
+                    "colors.background",
+                    defaults.colors.background,
+                )?,
+                foreground: resolve_color(
+                    self.colors.foreground,
+                    "colors.foreground",
+                    defaults.colors.foreground,
+                )?,
             },
-            terminal: self.terminal.into_config(&mut warnings)?,
+            window: self.window.into_config()?,
+            font: self.font.into_config()?,
             layout: self.layout.into_config(&mut warnings)?,
             ui: self.ui.into_config(&mut warnings)?,
         };
 
         Ok((cfg, warnings))
+    }
+}
+
+impl RawWindow {
+    fn into_config(self) -> Result<WindowConfig, ConfigError> {
+        let defaults = WindowConfig::default();
+
+        let app_id = match self.app_id {
+            Some(c) if c.trim().is_empty() => {
+                return Err(ConfigError::Validation(
+                    "window.app_id must not be empty".to_string(),
+                ));
+            }
+            Some(c) => c,
+            None => defaults.app_id,
+        };
+
+        let width = match self.width {
+            Some(0) => {
+                return Err(ConfigError::Validation(
+                    "window.width must be at least 1".to_string(),
+                ));
+            }
+            Some(w) => w,
+            None => defaults.width,
+        };
+
+        let height = match self.height {
+            Some(0) => {
+                return Err(ConfigError::Validation(
+                    "window.height must be at least 1".to_string(),
+                ));
+            }
+            Some(h) => h,
+            None => defaults.height,
+        };
+
+        let opacity = match self.opacity {
+            Some(o) if !(o.is_finite() && (0.0..=1.0).contains(&o)) => {
+                return Err(ConfigError::Validation(
+                    "window.opacity must be between 0.0 and 1.0".to_string(),
+                ));
+            }
+            Some(o) => o,
+            None => defaults.opacity,
+        };
+
+        let placement = match self.placement.as_deref() {
+            None => defaults.placement,
+            Some("fullscreen") => WindowPlacement::Fullscreen,
+            Some("centered") => WindowPlacement::Centered,
+            Some(other) => {
+                return Err(ConfigError::Validation(format!(
+                    "window.placement must be \"fullscreen\" or \"centered\", got {:?}",
+                    other
+                )));
+            }
+        };
+
+        Ok(WindowConfig {
+            app_id,
+            width,
+            height,
+            placement,
+            transparent: self.transparent.unwrap_or(defaults.transparent),
+            opacity,
+        })
+    }
+}
+
+impl RawFont {
+    fn into_config(self) -> Result<FontConfig, ConfigError> {
+        let defaults = FontConfig::default();
+
+        let size = match self.size {
+            Some(s) if !(s.is_finite() && s > 0.0) => {
+                return Err(ConfigError::Validation(
+                    "font.size must be a positive number".to_string(),
+                ));
+            }
+            Some(s) => s,
+            None => defaults.size,
+        };
+
+        let path = match self.path {
+            Some(p) if p.trim().is_empty() => None,
+            other => other,
+        };
+
+        Ok(FontConfig { path, size })
     }
 }
 
@@ -401,42 +567,6 @@ fn resolve_padding(value: Option<u16>, field: &str, warnings: &mut Vec<String>) 
     }
 }
 
-impl RawTerminal {
-    fn into_config(self, warnings: &mut Vec<String>) -> Result<TerminalConfig, ConfigError> {
-        let defaults = TerminalConfig::default();
-
-        let class = match self.class {
-            Some(c) if c.trim().is_empty() => {
-                return Err(ConfigError::Validation(
-                    "terminal.class must not be empty".to_string(),
-                ));
-            }
-            Some(c) => c,
-            None => defaults.class,
-        };
-
-        let mut flags = defaults.flags;
-        if let Some(custom) = self.flags {
-            for (name, entry) in custom {
-                if !entry.args.iter().any(|s| s.contains("{cmd}")) {
-                    warnings.push(format!(
-                        "terminal.flags.{} args missing required {{cmd}} placeholder; falling back to built-in defaults",
-                        name
-                    ));
-                    continue;
-                }
-                flags.insert(name, entry.args);
-            }
-        }
-
-        Ok(TerminalConfig {
-            preferred: self.preferred.unwrap_or(defaults.preferred),
-            class,
-            flags,
-        })
-    }
-}
-
 fn resolve_color(value: Option<String>, field: &str, default: Color) -> Result<Color, ConfigError> {
     match value {
         Some(raw) => parse_color(&raw).map_err(|msg| {
@@ -535,8 +665,10 @@ mod tests {
         assert!(!cfg.ui.banner.is_empty());
         assert_eq!(cfg.ui.prompt, "> ");
         assert_eq!(cfg.ui.page_size, 10);
-        assert_eq!(cfg.colors.prompt, Color::Cyan);
-        assert_eq!(cfg.colors.selected, Color::Yellow);
+        // The default palette is a violet-tinted dark theme (all RGB).
+        assert!(matches!(cfg.colors.prompt, Color::Rgb(..)));
+        assert!(matches!(cfg.colors.selected, Color::Rgb(..)));
+        assert!(matches!(cfg.colors.selected_bg, Color::Rgb(..)));
     }
 
     #[test]
@@ -692,121 +824,178 @@ sparkle = "red""#;
     }
 
     #[test]
-    fn default_terminal_has_builtin_flag_table() {
+    fn default_window_has_sensible_values() {
         let cfg = Config::default();
-        assert!(cfg.terminal.preferred.is_empty());
-        assert_eq!(cfg.terminal.class, "hyprburst");
-        for name in ["alacritty", "wezterm", "ghostty", "kitty", "foot", "rio"] {
-            assert!(
-                cfg.terminal.flags.contains_key(name),
-                "missing builtin flag entry for {}",
-                name
-            );
+        assert_eq!(cfg.window.app_id, "hyprburst");
+        assert_eq!(cfg.window.width, 640);
+        assert_eq!(cfg.window.height, 720);
+        assert_eq!(cfg.window.placement, WindowPlacement::Fullscreen);
+        assert!(cfg.window.transparent);
+        assert_eq!(cfg.window.opacity, 0.85);
+    }
+
+    #[test]
+    fn window_opacity_round_trips_and_is_range_checked() {
+        let cfg = Config::from_toml_str("[window]\nopacity = 0.5\n").unwrap();
+        assert_eq!(cfg.window.opacity, 0.5);
+
+        for bad in ["1.5", "-0.1"] {
+            let err = Config::from_toml_str(&format!("[window]\nopacity = {bad}\n")).unwrap_err();
+            assert!(matches!(err, ConfigError::Validation(_)), "opacity {bad}");
         }
     }
 
     #[test]
-    fn full_terminal_section_round_trips() {
-        let toml = r#"
-[terminal]
-preferred = ["rio", "ghostty"]
-class = "my-launcher"
-
-[terminal.flags.rio]
-args = ["--title={class}", "-e", "{cmd}"]
-
-[terminal.flags.cosmic-term]
-args = ["--class={class}", "-e", "{cmd}"]
-"#;
-        let cfg = Config::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.terminal.preferred, vec!["rio", "ghostty"]);
-        assert_eq!(cfg.terminal.class, "my-launcher");
-        assert_eq!(
-            cfg.terminal.flags.get("cosmic-term").unwrap(),
-            &vec![
-                "--class={class}".to_string(),
-                "-e".to_string(),
-                "{cmd}".to_string()
-            ]
-        );
-        // Built-in entries we didn't override remain present.
-        assert!(cfg.terminal.flags.contains_key("kitty"));
+    fn window_placement_round_trips() {
+        for (raw, expected) in [
+            ("fullscreen", WindowPlacement::Fullscreen),
+            ("centered", WindowPlacement::Centered),
+        ] {
+            let cfg = Config::from_toml_str(&format!("[window]\nplacement = \"{raw}\"\n")).unwrap();
+            assert_eq!(cfg.window.placement, expected);
+        }
     }
 
     #[test]
-    fn partial_terminal_section_uses_defaults() {
-        let toml = r#"
-[terminal]
-preferred = ["rio"]
-"#;
-        let cfg = Config::from_toml_str(toml).unwrap();
-        assert_eq!(cfg.terminal.preferred, vec!["rio"]);
-        assert_eq!(cfg.terminal.class, "hyprburst");
-        // Built-in flag table is preserved when [terminal.flags] is omitted.
-        assert!(cfg.terminal.flags.contains_key("alacritty"));
-    }
-
-    #[test]
-    fn unknown_terminal_field_rejected() {
-        let toml = r#"
-[terminal]
-preferred = ["rio"]
-mystery = "x"
-"#;
-        let err = Config::from_toml_str(toml).unwrap_err();
-        assert!(matches!(err, ConfigError::Parse(_)));
-    }
-
-    #[test]
-    fn unknown_terminal_flags_field_rejected() {
-        let toml = r#"
-[terminal.flags.rio]
-args = ["{cmd}"]
-extra = "bad"
-"#;
-        let err = Config::from_toml_str(toml).unwrap_err();
-        assert!(matches!(err, ConfigError::Parse(_)));
-    }
-
-    #[test]
-    fn empty_terminal_class_rejected() {
-        let toml = r#"
-[terminal]
-class = ""
-"#;
-        let err = Config::from_toml_str(toml).unwrap_err();
+    fn invalid_window_placement_rejected() {
+        let err = Config::from_toml_str("[window]\nplacement = \"overlay\"\n").unwrap_err();
         assert!(matches!(err, ConfigError::Validation(_)));
     }
 
     #[test]
-    fn invalid_flag_template_warns_and_falls_back_to_default() {
-        let toml = r#"
-[terminal.flags.alacritty]
-args = ["--class={class}", "--no-cmd-here"]
-"#;
-        let (cfg, warnings) = Config::from_toml_str_validating(toml).unwrap();
-        assert_eq!(warnings.len(), 1, "warnings: {:?}", warnings);
-        assert!(
-            warnings[0].contains("alacritty") && warnings[0].contains("{cmd}"),
-            "unexpected warning: {}",
-            warnings[0]
-        );
-        // Built-in alacritty entry preserved instead of the broken override.
-        let defaults = TerminalConfig::default();
-        assert_eq!(
-            cfg.terminal.flags.get("alacritty"),
-            defaults.flags.get("alacritty")
-        );
+    fn selected_bg_color_parses_and_defaults() {
+        let cfg = Config::from_toml_str("[colors]\nselected_bg = \"#102030\"\n").unwrap();
+        assert_eq!(cfg.colors.selected_bg, Color::Rgb(0x10, 0x20, 0x30));
+        // Omitted → default violet bar.
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg.colors.selected_bg, Config::default().colors.selected_bg);
     }
 
     #[test]
-    fn valid_flag_template_round_trip_emits_no_warnings() {
+    fn full_window_section_round_trips() {
         let toml = r#"
-[terminal.flags.alacritty]
-args = ["--class={class}", "-e", "{cmd}"]
+[window]
+app_id = "my-launcher"
+width = 800
+height = 600
+transparent = false
+placement = "centered"
+opacity = 0.75
 "#;
-        let (_, warnings) = Config::from_toml_str_validating(toml).unwrap();
-        assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.window.app_id, "my-launcher");
+        assert_eq!(cfg.window.width, 800);
+        assert_eq!(cfg.window.height, 600);
+        assert_eq!(cfg.window.placement, WindowPlacement::Centered);
+        assert!(!cfg.window.transparent);
+        assert_eq!(cfg.window.opacity, 0.75);
+    }
+
+    #[test]
+    fn partial_window_section_uses_defaults() {
+        let toml = r#"
+[window]
+app_id = "custom"
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        let defaults = WindowConfig::default();
+        assert_eq!(cfg.window.app_id, "custom");
+        assert_eq!(cfg.window.width, defaults.width);
+        assert_eq!(cfg.window.transparent, defaults.transparent);
+    }
+
+    #[test]
+    fn empty_window_app_id_rejected() {
+        let err = Config::from_toml_str("[window]\napp_id = \"\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn zero_window_size_rejected() {
+        let err = Config::from_toml_str("[window]\nwidth = 0\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn unknown_window_field_rejected() {
+        let err = Config::from_toml_str("[window]\nmystery = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn default_font_has_sensible_values() {
+        let cfg = Config::default();
+        assert_eq!(cfg.font.path, None);
+        assert_eq!(cfg.font.size, 20.0);
+    }
+
+    #[test]
+    fn full_font_section_round_trips() {
+        let toml = r#"
+[font]
+path = "/usr/share/fonts/TTF/MyFont.ttf"
+size = 18.0
+"#;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(
+            cfg.font.path.as_deref(),
+            Some("/usr/share/fonts/TTF/MyFont.ttf")
+        );
+        assert_eq!(cfg.font.size, 18.0);
+    }
+
+    #[test]
+    fn empty_font_path_becomes_none() {
+        let cfg = Config::from_toml_str("[font]\npath = \"\"\n").unwrap();
+        assert_eq!(cfg.font.path, None);
+    }
+
+    #[test]
+    fn non_positive_font_size_rejected() {
+        let err = Config::from_toml_str("[font]\nsize = 0.0\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn unknown_font_field_rejected() {
+        let err = Config::from_toml_str("[font]\nweight = 700\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn default_colors_have_background_and_foreground() {
+        let cfg = Config::default();
+        // Dark, violet-tinted defaults (no pure black/white).
+        assert!(matches!(cfg.colors.background, Color::Rgb(..)));
+        assert!(matches!(cfg.colors.foreground, Color::Rgb(..)));
+    }
+
+    #[test]
+    fn background_and_foreground_colors_round_trip() {
+        let toml = r##"
+[colors]
+background = "#1e1e2e"
+foreground = "white"
+"##;
+        let cfg = Config::from_toml_str(toml).unwrap();
+        assert_eq!(cfg.colors.background, Color::Rgb(0x1e, 0x1e, 0x2e));
+        assert_eq!(cfg.colors.foreground, Color::White);
+    }
+
+    #[test]
+    fn removed_terminal_section_errors_with_migration_hint() {
+        let toml = r#"
+[terminal]
+preferred = ["rio"]
+"#;
+        let err = Config::from_toml_str(toml).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(matches!(err, ConfigError::Parse(_)));
+        assert!(
+            msg.contains("window.app_id"),
+            "migration hint should point at window.app_id, got: {}",
+            msg
+        );
     }
 
     #[test]

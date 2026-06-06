@@ -1,9 +1,9 @@
 use ratatui::crossterm::event::KeyCode;
 use ratatui::prelude::*;
 
-use crate::config::Config;
-use crate::effects::FadeIn;
-use crate::launcher::Launcher;
+use crate::domain::config::Config;
+use crate::tui::effects::FadeIn;
+use crate::tui::launcher::Launcher;
 
 pub struct App {
     pub running: bool,
@@ -14,7 +14,7 @@ pub struct App {
 impl App {
     pub fn new(config: Config) -> Self {
         let launcher = Launcher::new(config);
-        let running = launcher.running;
+        let running = launcher.running();
         Self {
             running,
             launcher,
@@ -24,7 +24,7 @@ impl App {
 
     pub fn handle_key(&mut self, code: KeyCode) {
         self.launcher.handle_key(code);
-        self.running = self.launcher.running;
+        self.running = self.launcher.running();
     }
 
     pub fn apply_effects(&mut self, frame: &mut Frame<'_>, area: Rect) {

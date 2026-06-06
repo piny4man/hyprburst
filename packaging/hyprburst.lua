@@ -1,0 +1,18 @@
+-- hyprburst.lua — Hyprland 0.55+ (Lua config) bind for the hyprburst launcher.
+--
+-- Since Hyprland 0.55, hyprlang (.conf) is deprecated in favor of Lua, and the
+-- two cannot coexist: Hyprland loads ~/.config/hypr/hyprland.lua if present,
+-- otherwise ~/.config/hypr/hyprland.conf. If your main config is Lua, use THIS
+-- file; if it is still hyprlang, use packaging/hyprburst.conf instead.
+--
+-- Install it next to hyprland.lua and require it:
+--
+--     install -Dm644 packaging/hyprburst.lua ~/.config/hypr/hyprburst.lua
+--     -- then, in ~/.config/hypr/hyprland.lua:
+--     dofile(os.getenv("HOME") .. "/.config/hypr/hyprburst.lua")
+--
+-- Super+Space opens the launcher window. hyprburst owns its own Wayland surface,
+-- so there is no terminal to resolve. Placement and opacity live in
+-- ~/.config/hyprburst/config.toml; hyprburst relaunches itself once through
+-- Hyprland's Lua exec rules so this file can stay minimal.
+hl.bind("SUPER + Space", hl.dsp.exec_cmd("hyprburst"))

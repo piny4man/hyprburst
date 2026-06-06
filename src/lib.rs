@@ -1,12 +1,19 @@
-pub mod app;
-pub mod config;
-pub mod desktop;
-pub mod effects;
-pub mod history;
-pub mod icon;
-pub mod input;
-pub mod launcher;
-pub mod layout;
-pub mod search;
-pub mod terminal;
-pub mod terminal_resolver;
+//! hyprburst — a fast application launcher for Hyprland.
+//!
+//! The crate is grouped into a few clusters:
+//!
+//! - [`domain`] — the frontend-agnostic state machine, app discovery, search,
+//!   history, icons, and config (no rendering).
+//! - [`view`] — ratatui `Buffer` painting (`render_core` + layout) shared by both
+//!   frontends.
+//! - [`gpu`] — the GPU window launcher (winit + glutin + glow + ab_glyph).
+//! - [`tui`] — the crossterm/ratatui fallback for SSH / no-GPU sessions.
+//! - [`system`] — Hyprland integration.
+//! - [`bench`] — the live `--measure` / `--bench-startup` footprint probes.
+
+pub mod bench;
+pub mod domain;
+pub mod gpu;
+pub mod system;
+pub mod tui;
+pub mod view;
