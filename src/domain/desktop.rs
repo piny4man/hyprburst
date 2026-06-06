@@ -51,13 +51,142 @@ impl DesktopEntry {
             return None;
         }
 
+        let icon = icon.unwrap_or_default();
+        let exec = exec
+            .map(|exec| expand_exec_field_codes(&exec, &name, &icon))
+            .unwrap_or_default();
+
         Some(DesktopEntry {
             id: String::new(),
             name,
-            icon: icon.unwrap_or_default(),
-            exec: exec.unwrap_or_default(),
+            icon,
+            exec,
         })
     }
+}
+
+fn expand_exec_field_codes(exec: &str, name: &str, icon: &str) -> String {
+    let mut out = String::with_capacity(exec.len());
+
+    for token in exec_tokens(exec) {
+        if token_has_target_field_code(&token) {
+            continue;
+        }
+
+        let expanded = expand_non_target_field_codes(&token, name, icon);
+        if !expanded.is_empty() {
+            push_spaced(&mut out, &expanded);
+        }
+    }
+
+    out
+}
+
+fn exec_tokens(exec: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    for c in exec.trim().chars() {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                token.push(c);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                token.push(c);
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !token.is_empty() {
+                    tokens.push(std::mem::take(&mut token));
+                }
+            }
+            _ => token.push(c),
+        }
+    }
+
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+
+    tokens
+}
+
+fn token_has_target_field_code(token: &str) -> bool {
+    let mut chars = token.chars();
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            continue;
+        }
+
+        match chars.next() {
+            Some('%') => {}
+            Some('f' | 'F' | 'u' | 'U' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm') => return true,
+            Some(_) | None => {}
+        }
+    }
+
+    false
+}
+
+fn expand_non_target_field_codes(exec: &str, name: &str, icon: &str) -> String {
+    let mut out = String::with_capacity(exec.len());
+    let mut chars = exec.chars();
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+
+        match chars.next() {
+            Some('%') => out.push('%'),
+            Some('i') if !icon.is_empty() => {
+                push_spaced(&mut out, "--icon");
+                push_spaced(&mut out, &shell_quote_arg(icon));
+            }
+            Some('i' | 'k') => {}
+            Some('c') => push_spaced(&mut out, &shell_quote_arg(name)),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+
+    out
+}
+
+fn shell_quote_arg(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':'))
+    {
+        return value.to_string();
+    }
+
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for c in value.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn push_spaced(out: &mut String, value: &str) {
+    if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+        out.push(' ');
+    }
+    out.push_str(value);
 }
 
 pub fn discover_apps() -> Vec<DesktopEntry> {
@@ -111,7 +240,62 @@ Type=Application
         let entry = DesktopEntry::parse(content).unwrap();
         assert_eq!(entry.name, "Firefox");
         assert_eq!(entry.icon, "firefox");
-        assert_eq!(entry.exec, "firefox %u");
+        assert_eq!(entry.exec, "firefox");
+    }
+
+    #[test]
+    fn removes_file_placeholders_from_exec() {
+        let content = r#"[Desktop Entry]
+Name=Inkscape
+Icon=org.inkscape.Inkscape
+Exec=inkscape %F
+"#;
+        let entry = DesktopEntry::parse(content).unwrap();
+        assert_eq!(entry.exec, "inkscape");
+    }
+
+    #[test]
+    fn removes_url_placeholders_from_exec() {
+        let content = r#"[Desktop Entry]
+Name=Browser
+Exec=brave %U
+"#;
+        let entry = DesktopEntry::parse(content).unwrap();
+        assert_eq!(entry.exec, "brave");
+    }
+
+    #[test]
+    fn removes_option_token_when_it_contains_url_placeholder() {
+        let content = r#"[Desktop Entry]
+Name=Spotify
+Exec=spotify --uri=%u
+"#;
+        let entry = DesktopEntry::parse(content).unwrap();
+        assert_eq!(entry.exec, "spotify");
+    }
+
+    #[test]
+    fn preserves_quoted_executable_when_removing_placeholders() {
+        let content = r#"[Desktop Entry]
+Name=Beekeeper Studio
+Exec="/opt/Beekeeper Studio/beekeeper-studio" %U
+"#;
+        let entry = DesktopEntry::parse(content).unwrap();
+        assert_eq!(entry.exec, "\"/opt/Beekeeper Studio/beekeeper-studio\"");
+    }
+
+    #[test]
+    fn expands_literal_percent_icon_and_name_placeholders() {
+        let content = r#"[Desktop Entry]
+Name=Fancy App
+Icon=fancy-icon
+Exec=fancy --rate %% --label %c %i
+"#;
+        let entry = DesktopEntry::parse(content).unwrap();
+        assert_eq!(
+            entry.exec,
+            "fancy --rate % --label 'Fancy App' --icon fancy-icon"
+        );
     }
 
     #[test]
