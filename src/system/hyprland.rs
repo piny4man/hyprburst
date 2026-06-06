@@ -16,6 +16,8 @@
 use std::process::Command;
 use std::sync::OnceLock;
 
+use crate::domain::config::{Config, WindowPlacement};
+
 /// Which `hyprctl dispatch` form the running Hyprland accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchSyntax {
@@ -29,6 +31,7 @@ pub enum DispatchSyntax {
 /// pin the form, bypassing version detection (escape hatch for the config-
 /// transition edge where the version alone is ambiguous).
 pub const DISPATCH_ENV: &str = "HYPRBURST_DISPATCH";
+pub const CHILD_ENV: &str = "HYPRBURST_CHILD";
 
 /// The dispatch form to use, detected once and cached for the process.
 pub fn dispatch_syntax() -> DispatchSyntax {
@@ -109,6 +112,88 @@ fn lua_quote(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':'))
+    {
+        return s.to_string();
+    }
+
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn format_rule_float(value: f32) -> String {
+    let mut s = format!("{value:.3}");
+    while s.contains('.') && s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.push('0');
+    }
+    s
+}
+
+fn launch_rules_lua(config: &Config) -> String {
+    let opacity = format_rule_float(config.window.opacity);
+    let common = format!(
+        "float = true, pin = true, stay_focused = true, opacity = {}",
+        lua_quote(&format!("{opacity} {opacity} override"))
+    );
+
+    match config.window.placement {
+        WindowPlacement::Fullscreen => {
+            format!("{{ {common}, size = {{ \"monitor_w\", \"monitor_h\" }}, move = {{ 0, 0 }} }}")
+        }
+        WindowPlacement::Centered => format!(
+            "{{ {common}, size = {{ {}, {} }}, center = true }}",
+            config.window.width, config.window.height
+        ),
+    }
+}
+
+fn current_exe_command() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_else(|| "hyprburst".to_string())
+}
+
+/// Relaunch hyprburst through Hyprland's Lua `exec_cmd(..., rules)` path so the
+/// user's TOML placement/opacity choices can be applied without maintaining
+/// static window rules in `hyprland.lua`. Returns `true` when the parent process
+/// successfully handed off to Hyprland and should exit.
+pub fn dispatch_configured_launcher(config: &Config) -> bool {
+    if std::env::var_os(CHILD_ENV).is_some() || dispatch_syntax() != DispatchSyntax::Lua {
+        return false;
+    }
+
+    let command = format!(
+        "env {}=1 {}",
+        CHILD_ENV,
+        shell_quote(&current_exe_command())
+    );
+    let expression = format!(
+        "hl.dsp.exec_cmd({}, {})",
+        lua_quote(&command),
+        launch_rules_lua(config)
+    );
+
+    Command::new("hyprctl")
+        .args(["dispatch", &expression])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// `hyprctl` args to exec `command` under the given dispatch `syntax`.
@@ -245,5 +330,32 @@ mod tests {
             special_toggle_args(DispatchSyntax::Lua, "hyprburst"),
             vec!["dispatch", "hl.dsp.workspace.toggle_special(\"hyprburst\")",],
         );
+    }
+
+    #[test]
+    fn configured_fullscreen_rules_use_monitor_expressions() {
+        let cfg = Config::default();
+        assert_eq!(
+            launch_rules_lua(&cfg),
+            "{ float = true, pin = true, stay_focused = true, opacity = \"0.85 0.85 override\", size = { \"monitor_w\", \"monitor_h\" }, move = { 0, 0 } }"
+        );
+    }
+
+    #[test]
+    fn configured_centered_rules_use_configured_size() {
+        let cfg = Config::from_toml_str(
+            "[window]\nplacement = \"centered\"\nwidth = 800\nheight = 600\nopacity = 0.75\n",
+        )
+        .unwrap();
+        assert_eq!(
+            launch_rules_lua(&cfg),
+            "{ float = true, pin = true, stay_focused = true, opacity = \"0.75 0.75 override\", size = { 800, 600 }, center = true }"
+        );
+    }
+
+    #[test]
+    fn shell_quote_handles_spaces_and_quotes() {
+        assert_eq!(shell_quote("/usr/bin/hyprburst"), "/usr/bin/hyprburst");
+        assert_eq!(shell_quote("/tmp/my app's/bin"), "'/tmp/my app'\\''s/bin'");
     }
 }

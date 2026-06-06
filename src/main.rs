@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use hyprburst::domain::config::Config;
 use hyprburst::gpu::window;
+use hyprburst::system::hyprland;
 use hyprburst::tui::app::App;
 use hyprburst::tui::{input, terminal};
 
@@ -89,6 +90,10 @@ fn run_tui() -> io::Result<()> {
 /// cold-start / RSS report.
 fn run_window(measure: bool, start: Instant) -> ExitCode {
     let config = load_config();
+    if !measure && hyprland::dispatch_configured_launcher(&config) {
+        return ExitCode::SUCCESS;
+    }
+
     match window::run(config, measure, start) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

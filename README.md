@@ -57,8 +57,8 @@ hyprburst/
 │   └── system/
 │       └── hyprland.rs     # hyprctl dispatch (legacy + 0.55+ Lua `hl.dsp` forms)
 ├── packaging/
-│   ├── hyprburst.conf   # Hyprlang drop-in: windowrules + Super+Space bind
-│   └── hyprburst.lua    # Hyprland 0.55+ Lua drop-in (same rules + bind)
+│   ├── hyprburst.conf   # Legacy hyprlang drop-in: static windowrules + bind
+│   └── hyprburst.lua    # Hyprland 0.55+ Lua bind; placement lives in TOML
 ├── .github/workflows/
 │   └── ci.yml           # Pull request CI: fmt, clippy, tests
 ├── Cargo.toml
@@ -69,7 +69,7 @@ hyprburst/
 
 - **OS** — Linux with [Hyprland](https://hyprland.org/) (a Wayland session). Hyprburst opens its own GPU window and dispatches launches through `hyprctl`, so it expects a running Hyprland session.
 - **OpenGL** — the launcher window is rendered with OpenGL via your GPU driver (Mesa or vendor). Virtually every Hyprland-capable machine already has this.
-- **Hyprland 0.48+** — the shipped `hyprburst.conf` uses the unified `windowrule` syntax. On Hyprland 0.55+ (Lua config), use `hyprburst.lua` instead — see [Hyprland Setup](#hyprland-setup).
+- **Hyprland 0.55+ recommended** — use the Lua bind snippet and configure placement/opacity in `~/.config/hyprburst/config.toml`. Legacy Hyprland 0.48–0.54 / `hyprland.conf` setups can use the shipped hyprlang `hyprburst.conf` with unified `windowrule` syntax.
 - **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. It auto-picks an installed [Nerd Font](https://www.nerdfonts.com/) (a *Mono* variant preferred); if none is installed, the icons show as tofu squares — install one (e.g. `JetBrainsMono Nerd Font`) or set `[font] path` / `$HYPRBURST_FONT` to one.
 
 ## Install
@@ -100,9 +100,9 @@ cargo install hyprburst
 paru -S hyprburst   # or: yay -S hyprburst
 ```
 
-The `PKGBUILD` lives at [`packaging/aur/`](packaging/aur/) — it builds the published crate from source and installs the binary, the drop-in Hyprland config, and the example config. See its [README](packaging/aur/README.md) to build or publish it yourself.
+The `PKGBUILD` lives at [`packaging/aur/`](packaging/aur/) — it builds the published crate from source and installs the binary, both Hyprland snippets, and the example config. See its [README](packaging/aur/README.md) to build or publish it yourself.
 
-After installing, drop in the Hyprland config (see [Hyprland Setup](#hyprland-setup)) and bind a key to `hyprburst`.
+After installing, add the matching Hyprland snippet (see [Hyprland Setup](#hyprland-setup)).
 
 ## Usage
 
@@ -120,34 +120,14 @@ Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `E
 
 ## Hyprland Setup
 
-Hyprburst owns its Wayland surface with app-id `hyprburst`, so the windowrules target that app-id directly (no terminal in between). Ship config comes in **two formats — pick the one matching your Hyprland config**, because Hyprland loads `hyprland.lua` if present, otherwise `hyprland.conf`; the two cannot coexist:
+Hyprburst opens its own Wayland window with app-id `hyprburst`; it does not run inside a terminal. Install one small Hyprland snippet, then customize behavior in `~/.config/hyprburst/config.toml`.
 
-- **hyprlang** (Hyprland 0.48–0.54, or any `hyprland.conf` setup): [`packaging/hyprburst.conf`](packaging/hyprburst.conf)
+Pick the snippet matching your Hyprland config format. Hyprland loads `hyprland.lua` if present, otherwise `hyprland.conf`; the two formats cannot be mixed.
+
 - **Lua** (Hyprland 0.55+ with `hyprland.lua`): [`packaging/hyprburst.lua`](packaging/hyprburst.lua)
+- **hyprlang** (legacy Hyprland 0.48–0.54, or any `hyprland.conf` setup): [`packaging/hyprburst.conf`](packaging/hyprburst.conf)
 
-Both contain the same windowrules (targeting the `hyprburst` app-id) and a `Super+Space` bind that opens the launcher window. Use `hyprburst tui` if you want to run inline in a terminal instead.
-
-### hyprlang (`hyprburst.conf`)
-
-```sh
-# Drop the config next to hyprland.conf and source it.
-install -Dm644 packaging/hyprburst.conf ~/.config/hypr/hyprburst.conf
-echo 'source = ~/.config/hypr/hyprburst.conf' >> ~/.config/hypr/hyprland.conf
-```
-
-```ini
-# Requires Hyprland 0.48+ (unified `windowrule`; `windowrulev2` is deprecated).
-windowrule = match:class ^(hyprburst)$, float on
-windowrule = match:class ^(hyprburst)$, size (monitor_w) (monitor_h)
-windowrule = match:class ^(hyprburst)$, move 0 0
-windowrule = match:class ^(hyprburst)$, opacity 0.9 0.8
-windowrule = match:class ^(hyprburst)$, border_size 0
-windowrule = match:class ^(hyprburst)$, no_shadow on
-windowrule = match:class ^(hyprburst)$, stay_focused on
-windowrule = match:class ^(hyprburst)$, dim_around on
-
-bind = SUPER, Space, exec, hyprburst
-```
+On Hyprland 0.55+ Lua configs, the snippet only binds the key. Placement and opacity come from Hyprburst's TOML config.
 
 ### Lua (`hyprburst.lua`, Hyprland 0.55+)
 
@@ -159,17 +139,53 @@ install -Dm644 packaging/hyprburst.lua ~/.config/hypr/hyprburst.lua
 
 ```lua
 hl.bind("SUPER + Space", hl.dsp.exec_cmd("hyprburst"))
-hl.window_rule({ match = { class = "hyprburst" }, float = true })
-hl.window_rule({ match = { class = "hyprburst" }, size = "monitor_w monitor_h" })
-hl.window_rule({ match = { class = "hyprburst" }, move = "0 0" })
-hl.window_rule({ match = { class = "hyprburst" }, opacity = "0.9 0.8" })
-hl.window_rule({ match = { class = "hyprburst" }, border_size = 0 })
-hl.window_rule({ match = { class = "hyprburst" }, no_shadow = true })
-hl.window_rule({ match = { class = "hyprburst" }, stay_focused = true })
-hl.window_rule({ match = { class = "hyprburst" }, dim_around = true })
 ```
 
-The `size (monitor_w) (monitor_h)` and `move 0 0` rules make hyprburst a full-monitor floating overlay without putting the client into real fullscreen. This matters for the blur: the windows behind hyprburst stay visible for opacity and blur effects. The `opacity 0.9 0.8` rule sets active/inactive opacity; Hyprland's background blur applies automatically to hyprburst's transparent surface as long as `decoration:blur:enabled = true` is set globally (and `[window] transparent = true`, the default). `stay_focused on` keeps the overlay focused, and `dim_around on` dims the rest of the screen while hyprburst is open.
+### Configure Placement
+
+For current Lua setups, use `~/.config/hyprburst/config.toml`:
+
+```toml
+[window]
+placement = "fullscreen" # or "centered"
+opacity = 0.85
+```
+
+`fullscreen` is the default full-monitor overlay. `centered` uses `[window] width` and `[window] height`.
+
+Hyprburst translates those settings into launch-time Lua rules:
+
+| Placement | Hyprland behavior |
+|-----------|-------------------|
+| `fullscreen` | `float`, `pin`, `stay_focused`, `size = { "monitor_w", "monitor_h" }`, `move = { 0, 0 }`, `opacity = "... override"` |
+| `centered` | `float`, `pin`, `stay_focused`, `size = { window.width, window.height }`, `center = true` |
+
+Hyprburst is still a normal Wayland window. `pin` and focus rules keep it above normal app windows, but layer-shell surfaces such as top-layer Waybar can still draw above it.
+
+### hyprlang (`hyprburst.conf`, legacy)
+
+```sh
+# Drop the config next to hyprland.conf and source it.
+install -Dm644 packaging/hyprburst.conf ~/.config/hypr/hyprburst.conf
+echo 'source = ~/.config/hypr/hyprburst.conf' >> ~/.config/hypr/hyprland.conf
+```
+
+```ini
+# Requires Hyprland 0.48-0.54 (unified `windowrule`; `windowrulev2` is deprecated).
+windowrule = match:class ^(hyprburst)$, float on
+windowrule = match:class ^(hyprburst)$, pin on
+windowrule = match:class ^(hyprburst)$, size (monitor_w) (monitor_h)
+windowrule = match:class ^(hyprburst)$, move 0 0
+windowrule = match:class ^(hyprburst)$, opacity 0.9 0.9
+windowrule = match:class ^(hyprburst)$, border_size 0
+windowrule = match:class ^(hyprburst)$, no_shadow on
+windowrule = match:class ^(hyprburst)$, stay_focused on
+windowrule = match:class ^(hyprburst)$, dim_around on
+
+bind = SUPER, Space, exec, hyprburst
+```
+
+The legacy hyprlang file keeps static rules because old hyprlang configs cannot use the Lua `hl.dsp.exec_cmd("hyprburst", rules)` launch-time rule path. On current Hyprland Lua configs, prefer the minimal Lua bind plus TOML placement above.
 
 If Waybar renders above hyprburst, set Waybar's own config to `"layer": "bottom"` and restart Waybar:
 
@@ -179,9 +195,9 @@ If Waybar renders above hyprburst, set Waybar's own config to `"layer": "bottom"
 }
 ```
 
-Waybar is a layer-shell surface, so a normal floating window rule cannot draw above it while Waybar remains on the `top` layer.
+Waybar is a layer-shell surface, so a normal window cannot draw above it while Waybar remains on the `top` layer.
 
-Hyprburst renders a GL-native fade-in animation on open (the ease-out ramp duration is `FADE_SECS` in `src/gpu/window.rs`; the `hyprburst tui` fallback fades via `src/tui/effects.rs`). Escape closes the overlay.
+Hyprburst fades in on open. `Escape` closes the overlay.
 
 ### Upgrading from 0.4.x
 
@@ -189,17 +205,18 @@ Hyprburst renders a GL-native fade-in animation on open (the ease-out ramp durat
 
 ## Window and font
 
-The launcher window and its cell font are configured under `[window]` and `[font]`.
+The launcher window and cell font are configured under `[window]` and `[font]` in `~/.config/hyprburst/config.toml`.
 
 ### `[window]`
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `window.app_id` | string | `"hyprburst"` | Wayland app-id; the Hyprland windowrules match it. Must be non-empty. Change it and update the `match:class`/`match = { class = ... }` rules to match. |
-| `window.width` | integer | `640` | Initial window width in logical pixels. Must be `>= 1`. (The overlay windowrule resizes it to the monitor anyway.) |
-| `window.height` | integer | `720` | Initial window height in logical pixels. Must be `>= 1`. |
-| `window.transparent` | bool | `true` | Keep the surface transparent so Hyprland's blur shows through. Set `false` to paint an opaque `colors.background` instead. |
-| `window.opacity` | float | `0.85` | Opacity (`0.0`–`1.0`) of the background panel painted behind the launcher when `transparent = true` — dims the blur so text stays legible. `1.0` fully hides the blur; lower values show more wallpaper. Raise it if the launcher looks too see-through. Ignored when `transparent = false`. |
+| `window.app_id` | string | `"hyprburst"` | Wayland app-id. Change only if you know why; legacy hyprlang rules must match it. |
+| `window.placement` | string | `"fullscreen"` | `"fullscreen"` for full-monitor overlay, `"centered"` for a centered floating window. |
+| `window.width` | integer | `640` | Centered window width. Must be `>= 1`. |
+| `window.height` | integer | `720` | Centered window height. Must be `>= 1`. |
+| `window.transparent` | bool | `true` | Keep transparent for Hyprland blur. Set `false` for an opaque `colors.background`. |
+| `window.opacity` | float | `0.85` | Single opacity knob. On Lua Hyprland it is sent as compositor opacity with `override`; hyprburst also uses it for the transparent background panel. |
 
 ### `[font]`
 
@@ -260,7 +277,7 @@ selected = "#ffb86c"
 
 ## Environment variables
 
-Hyprburst reads one environment variable: `$HYPRBURST_FONT`, an optional path to a `.ttf`/`.otf` to use as the window's cell font (it overrides `fc-match`, and is itself overridden by `[font] path` in the config). Everything else lives in `~/.config/hyprburst/config.toml`. App launches are dispatched through `hyprctl`, which auto-detects the Hyprland dispatch form; set `HYPRBURST_DISPATCH=lua|legacy` to force it if detection ever misfires.
+Hyprburst reads `$HYPRBURST_FONT`, an optional path to a `.ttf`/`.otf` to use as the window's cell font (it overrides `fc-match`, and is itself overridden by `[font] path` in the config). The window launcher uses `$HYPRBURST_CHILD` internally to avoid relaunch loops when applying Hyprland Lua launch rules. Everything else lives in `~/.config/hyprburst/config.toml`. App launches are dispatched through `hyprctl`, which auto-detects the Hyprland dispatch form; set `HYPRBURST_DISPATCH=lua|legacy` to force it if detection ever misfires.
 
 ## Config
 
@@ -372,11 +389,11 @@ CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startu
 
 **The window doesn't open / `hyprburst` exits with a font or display error.** It needs a Wayland session with OpenGL. From an SSH or no-GPU session, run `hyprburst tui` instead (inline crossterm UI). If it can't find a font, set `[font] path`.
 
-**The launcher opens in the wrong place / isn't fullscreen.** The Hyprland windowrules target the `hyprburst` app-id. If you changed `window.app_id` in your config, update the `match:class ^(hyprburst)$` (or Lua `match = { class = ... }`) rules to match. If you skipped the config entirely, install [`packaging/hyprburst.conf`](packaging/hyprburst.conf) (or `.lua`) as shown in [Hyprland Setup](#hyprland-setup).
+**The launcher opens in the wrong place / isn't fullscreen.** On Hyprland 0.55+ Lua configs, install the minimal [`packaging/hyprburst.lua`](packaging/hyprburst.lua) bind and set `[window] placement` in `~/.config/hyprburst/config.toml`. Use `"fullscreen"` for the full-monitor overlay or `"centered"` for a centered floating window. Legacy hyprlang users still rely on static rules in [`packaging/hyprburst.conf`](packaging/hyprburst.conf).
 
 **Waybar (or another bar) renders on top of hyprburst.** Waybar is a layer-shell surface on the `top` layer, which a normal floating window can't cover. Set Waybar's config to `"layer": "bottom"` and restart it — details in [Hyprland Setup](#hyprland-setup).
 
-**Background blur / transparency doesn't show.** Keep `[window] transparent = true` (the default) and set Hyprland's `decoration:blur:enabled = true` globally. The `opacity 0.9 0.8` windowrule only affects hyprburst's own window.
+**Background blur / transparency doesn't show.** Keep `[window] transparent = true` (the default) and set Hyprland's `decoration:blur:enabled = true` globally. `[window] opacity` controls both Hyprland compositor opacity on Lua setups and the panel hyprburst paints inside its transparent surface.
 
 **The launcher looks too see-through / the blur washes out the text.** Raise `[window] opacity` (default `0.85`) toward `1.0` to dim more of the blur behind the launcher; `1.0` makes the background panel fully opaque.
 

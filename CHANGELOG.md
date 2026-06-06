@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[window] placement` (`fullscreen`, `centered`) for Hyprland 0.55+ Lua
+  launch-time rules driven from `~/.config/hyprburst/config.toml`; `[window]
+  opacity` now also drives the generated Hyprland opacity rule.
+
+### Changed
+
+- `packaging/hyprburst.lua` is now a minimal `Super+Space` bind. Lua users no
+  longer maintain static Hyprland window rules for placement; hyprburst relaunches
+  itself once through `hl.dsp.exec_cmd(..., rules)` using TOML settings.
+
 ## [0.5.0] - 2026-06-01
 
 Hyprburst now opens its **own GPU-rendered window** instead of spawning a

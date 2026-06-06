@@ -47,6 +47,7 @@ pub struct WindowConfig {
     pub app_id: String,
     pub width: u32,
     pub height: u32,
+    pub placement: WindowPlacement,
     pub transparent: bool,
     /// Opacity (`0.0`–`1.0`) of the background panel painted behind the launcher
     /// when `transparent = true` — dims Hyprland's blur so text stays legible.
@@ -60,10 +61,21 @@ impl Default for WindowConfig {
             app_id: DEFAULT_APP_ID.to_string(),
             width: DEFAULT_WINDOW_WIDTH,
             height: DEFAULT_WINDOW_HEIGHT,
+            placement: WindowPlacement::default(),
             transparent: true,
             opacity: DEFAULT_WINDOW_OPACITY,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WindowPlacement {
+    /// Floating window sized to the monitor and moved to the top-left. This keeps
+    /// blur-friendly overlay behavior without asking the client to fullscreen.
+    #[default]
+    Fullscreen,
+    /// Floating window centered at `window.width` x `window.height`.
+    Centered,
 }
 
 /// The cell font the window rasterizes glyphs from. `path` is an explicit
@@ -305,6 +317,7 @@ struct RawWindow {
     app_id: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    placement: Option<String>,
     transparent: Option<bool>,
     opacity: Option<f32>,
 }
@@ -401,10 +414,23 @@ impl RawWindow {
             None => defaults.opacity,
         };
 
+        let placement = match self.placement.as_deref() {
+            None => defaults.placement,
+            Some("fullscreen") => WindowPlacement::Fullscreen,
+            Some("centered") => WindowPlacement::Centered,
+            Some(other) => {
+                return Err(ConfigError::Validation(format!(
+                    "window.placement must be \"fullscreen\" or \"centered\", got {:?}",
+                    other
+                )));
+            }
+        };
+
         Ok(WindowConfig {
             app_id,
             width,
             height,
+            placement,
             transparent: self.transparent.unwrap_or(defaults.transparent),
             opacity,
         })
@@ -803,6 +829,7 @@ sparkle = "red""#;
         assert_eq!(cfg.window.app_id, "hyprburst");
         assert_eq!(cfg.window.width, 640);
         assert_eq!(cfg.window.height, 720);
+        assert_eq!(cfg.window.placement, WindowPlacement::Fullscreen);
         assert!(cfg.window.transparent);
         assert_eq!(cfg.window.opacity, 0.85);
     }
@@ -816,6 +843,23 @@ sparkle = "red""#;
             let err = Config::from_toml_str(&format!("[window]\nopacity = {bad}\n")).unwrap_err();
             assert!(matches!(err, ConfigError::Validation(_)), "opacity {bad}");
         }
+    }
+
+    #[test]
+    fn window_placement_round_trips() {
+        for (raw, expected) in [
+            ("fullscreen", WindowPlacement::Fullscreen),
+            ("centered", WindowPlacement::Centered),
+        ] {
+            let cfg = Config::from_toml_str(&format!("[window]\nplacement = \"{raw}\"\n")).unwrap();
+            assert_eq!(cfg.window.placement, expected);
+        }
+    }
+
+    #[test]
+    fn invalid_window_placement_rejected() {
+        let err = Config::from_toml_str("[window]\nplacement = \"overlay\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
     }
 
     #[test]
@@ -835,12 +879,16 @@ app_id = "my-launcher"
 width = 800
 height = 600
 transparent = false
+placement = "centered"
+opacity = 0.75
 "#;
         let cfg = Config::from_toml_str(toml).unwrap();
         assert_eq!(cfg.window.app_id, "my-launcher");
         assert_eq!(cfg.window.width, 800);
         assert_eq!(cfg.window.height, 600);
+        assert_eq!(cfg.window.placement, WindowPlacement::Centered);
         assert!(!cfg.window.transparent);
+        assert_eq!(cfg.window.opacity, 0.75);
     }
 
     #[test]

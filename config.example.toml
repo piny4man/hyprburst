@@ -24,26 +24,25 @@
 # background  = "#1a1b26"   # window background / dimming panel (see window.opacity)
 # foreground  = "#c8cce0"   # default text color for unstyled (Reset) text
 
-# The launcher window: its Wayland app-id (matched by the Hyprland windowrules),
-# initial size, and transparency. All keys are optional.
+# Launcher window. All keys are optional.
 [window]
-# Wayland app-id. The shipped windowrules match `^(hyprburst)$`; change both
-# together if you customize this. Must be non-empty.
+# Wayland app-id. Change only if you also update legacy hyprlang window rules.
 # app_id = "hyprburst"
 
-# Initial window size in logical pixels. The overlay windowrule resizes it to
-# the monitor anyway; these are the pre-rule defaults. Must be >= 1.
+# Placement on Hyprland 0.55+ Lua setups: "fullscreen" full-monitor overlay, or
+# "centered" floating window at width x height.
+# placement = "fullscreen"
+
+# Centered window size in logical pixels. Must be >= 1.
 # width = 640
 # height = 720
 
-# Keep the surface transparent so Hyprland's blur shows through. Set to false to
-# paint an opaque colors.background instead (no blur).
+# Keep transparent so Hyprland blur shows through. Set false for an opaque
+# colors.background.
 # transparent = true
 
-# Opacity (0.0–1.0) of the background panel painted behind the launcher when
-# transparent. It dims Hyprland's blur so text stays legible: 1.0 fully hides the
-# blur, lower values let more of the wallpaper through. Ignored when
-# transparent = false. Raise this if the launcher looks too see-through.
+# Single opacity knob (0.0-1.0). On Lua Hyprland this becomes compositor opacity
+# with `override`; hyprburst also uses it for the transparent background panel.
 # opacity = 0.85
 
 # The cell font the window rasterizes glyphs from.
