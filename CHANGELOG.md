@@ -101,6 +101,3 @@ application launcher for Arch Linux and Hyprland.
   taken on crates.io by an unrelated disassembler). The installed binary, the
   Hyprland window class, and the config/data directories
   (`~/.config/hyprburst/`, `~/.local/share/hyprburst/`) all use `hyprburst`.
-
-[Unreleased]: https://github.com/piny4man/hyprburst/compare/v0.4.3...HEAD
-[0.4.3]: https://github.com/piny4man/hyprburst/releases/tag/v0.4.3
