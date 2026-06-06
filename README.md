@@ -118,6 +118,8 @@ Hyprburst exposes a single binary with a tiny command surface. Run `hyprburst he
 
 Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `Enter` to launch the selected app, `Escape` to close.
 
+When opening an app from its `.desktop` file, Hyprburst removes freedesktop launch target placeholders such as `%f`, `%F`, `%u`, and `%U`. That matches normal app-launcher behavior for launches without a selected file or URL, so apps such as Inkscape start normally instead of receiving a literal placeholder argument.
+
 ## Hyprland Setup
 
 Hyprburst opens its own Wayland window with app-id `hyprburst`; it does not run inside a terminal. Install one small Hyprland snippet, then customize behavior in `~/.config/hyprburst/config.toml`.

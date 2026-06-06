@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer maintain static Hyprland window rules for placement; hyprburst relaunches
   itself once through `hl.dsp.exec_cmd(..., rules)` using TOML settings.
 
+## [0.5.1] - 2026-06-06
+
+### Fixed
+
+- Strip freedesktop `.desktop` launch target placeholders such as `%F`, `%U`,
+  and embedded URL/file placeholder arguments before dispatching app launches,
+  so apps like Inkscape open normally from the launcher.
+
 ## [0.5.0] - 2026-06-01
 
 Hyprburst now opens its **own GPU-rendered window** instead of spawning a
