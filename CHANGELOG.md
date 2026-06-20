@@ -5,16 +5,25 @@ All notable changes to Hyprburst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.2] - 2026-06-20
 
 ### Added
 
 - `[window] placement` (`fullscreen`, `centered`) for Hyprland 0.55+ Lua
   launch-time rules driven from `~/.config/hyprburst/config.toml`; `[window]
   opacity` now also drives the generated Hyprland opacity rule.
+- `[ui] show_banner` toggle to draw the banner above the prompt. The banner is
+  now **hidden by default**; set `show_banner = true` to show it. The built-in
+  ASCII art is preserved as the default content.
 
 ### Changed
 
+- The default `[window] placement` is now `centered` instead of `fullscreen`.
+- `fullscreen` placement now drops the window border and rounded corners
+  (`border_size = 0`, `rounding = 0`) since a full-monitor overlay has no visible
+  edges; `centered` keeps your normal Hyprland border and rounding.
+- `packaging/hyprburst.conf` (legacy hyprlang) now centers the launcher to match
+  the new default instead of shipping a full-monitor overlay.
 - `packaging/hyprburst.lua` is now a minimal `Super+Space` bind. Lua users no
   longer maintain static Hyprland window rules for placement; hyprburst relaunches
   itself once through `hl.dsp.exec_cmd(..., rules)` using TOML settings.

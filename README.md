@@ -1,6 +1,6 @@
 # Hyprburst
 
-A fast, fullscreen application launcher for Arch Linux + Hyprland, written in Rust.
+A fast application launcher for Arch Linux + Hyprland, written in Rust.
 
 Hyprburst opens its own GPU-rendered window with a semi-transparent blurred background — it owns its Wayland surface, so there's no terminal to spawn or guess. It displays apps in a grid with icons, uses hybrid fuzzy/prefix search with recency+frequency scoring, and tracks launch history in SQLite for smart ranking.
 
@@ -18,7 +18,7 @@ Hyprburst opens its own GPU-rendered window with a semi-transparent blurred back
 
 ## Demo
 
-> _Screenshots and a short screen capture live here._ Hyprburst is a fullscreen
+> _Screenshots and a short screen capture live here._ Hyprburst is a floating
 > overlay, so a still of the grid plus a few-second recording of type-to-filter
 > and launch convey it best. Drop assets under `docs/` (e.g. `docs/demo.gif`,
 > `docs/grid.png`) and link them in this section.
@@ -149,18 +149,18 @@ For current Lua setups, use `~/.config/hyprburst/config.toml`:
 
 ```toml
 [window]
-placement = "fullscreen" # or "centered"
+placement = "centered" # default; or "fullscreen"
 opacity = 0.85
 ```
 
-`fullscreen` is the default full-monitor overlay. `centered` uses `[window] width` and `[window] height`.
+`centered` is the default and uses `[window] width` and `[window] height`, keeping your normal Hyprland border and rounding. Set `placement = "fullscreen"` for a full-monitor overlay, which drops the border and rounded corners.
 
 Hyprburst translates those settings into launch-time Lua rules:
 
 | Placement | Hyprland behavior |
 |-----------|-------------------|
-| `fullscreen` | `float`, `pin`, `stay_focused`, `size = { "monitor_w", "monitor_h" }`, `move = { 0, 0 }`, `opacity = "... override"` |
 | `centered` | `float`, `pin`, `stay_focused`, `size = { window.width, window.height }`, `center = true` |
+| `fullscreen` | `float`, `pin`, `stay_focused`, `size = { "monitor_w", "monitor_h" }`, `move = { 0, 0 }`, `border_size = 0`, `rounding = 0`, `opacity = "... override"` |
 
 Hyprburst is still a normal Wayland window. `pin` and focus rules keep it above normal app windows, but layer-shell surfaces such as top-layer Waybar can still draw above it.
 
@@ -176,18 +176,16 @@ echo 'source = ~/.config/hypr/hyprburst.conf' >> ~/.config/hypr/hyprland.conf
 # Requires Hyprland 0.48-0.54 (unified `windowrule`; `windowrulev2` is deprecated).
 windowrule = match:class ^(hyprburst)$, float on
 windowrule = match:class ^(hyprburst)$, pin on
-windowrule = match:class ^(hyprburst)$, size (monitor_w) (monitor_h)
-windowrule = match:class ^(hyprburst)$, move 0 0
+windowrule = match:class ^(hyprburst)$, size 640 720
+windowrule = match:class ^(hyprburst)$, center 1
 windowrule = match:class ^(hyprburst)$, opacity 0.9 0.9
-windowrule = match:class ^(hyprburst)$, border_size 0
-windowrule = match:class ^(hyprburst)$, no_shadow on
 windowrule = match:class ^(hyprburst)$, stay_focused on
 windowrule = match:class ^(hyprburst)$, dim_around on
 
 bind = SUPER, Space, exec, hyprburst
 ```
 
-The legacy hyprlang file keeps static rules because old hyprlang configs cannot use the Lua `hl.dsp.exec_cmd("hyprburst", rules)` launch-time rule path. On current Hyprland Lua configs, prefer the minimal Lua bind plus TOML placement above.
+The legacy hyprlang file keeps static rules because old hyprlang configs cannot use the Lua `hl.dsp.exec_cmd("hyprburst", rules)` launch-time rule path. These rules center the window; for a full-monitor overlay, swap `size 640 720` + `center 1` for `size (monitor_w) (monitor_h)`, `move 0 0`, `border_size 0`, and `rounding 0`. On current Hyprland Lua configs, prefer the minimal Lua bind plus TOML placement above.
 
 If Waybar renders above hyprburst, set Waybar's own config to `"layer": "bottom"` and restart Waybar:
 
@@ -214,7 +212,7 @@ The launcher window and cell font are configured under `[window]` and `[font]` i
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
 | `window.app_id` | string | `"hyprburst"` | Wayland app-id. Change only if you know why; legacy hyprlang rules must match it. |
-| `window.placement` | string | `"fullscreen"` | `"fullscreen"` for full-monitor overlay, `"centered"` for a centered floating window. |
+| `window.placement` | string | `"centered"` | `"centered"` for a centered floating window (keeps your Hyprland border/rounding), `"fullscreen"` for a full-monitor overlay (drops border and rounded corners). |
 | `window.width` | integer | `640` | Centered window width. Must be `>= 1`. |
 | `window.height` | integer | `720` | Centered window height. Must be `>= 1`. |
 | `window.transparent` | bool | `true` | Keep transparent for Hyprland blur. Set `false` for an opaque `colors.background`. |
@@ -246,7 +244,8 @@ Two sections cover everything about how hyprburst renders on screen: `[layout]` 
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `ui.banner` | string | built-in ASCII "hyprburst" | Multi-line TOML string (`"""..."""`). Empty string hides the banner. |
+| `ui.show_banner` | bool | `false` | Draw the banner above the prompt. Hidden by default; set to `true` to show it. |
+| `ui.banner` | string | built-in ASCII "hyprburst" | Banner content, used when `show_banner = true`. Multi-line TOML string (`"""..."""`). An empty string also hides the banner. |
 | `ui.prompt` | string | `"> "` | Printed before the search cursor. |
 | `ui.page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
 | `ui.show_icons` | bool | `true` | Draw a Nerd Font glyph before each app. Disable if your font lacks Nerd glyphs. |

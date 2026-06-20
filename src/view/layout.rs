@@ -21,10 +21,10 @@ pub fn compute(area: Rect, config: &Config) -> LayoutRects {
     let inner_height = area.height.saturating_sub(pad_v.saturating_mul(2));
     let inner_end_y = inner_y + inner_height;
 
-    let banner_lines: Vec<&str> = if config.ui.banner.is_empty() {
-        Vec::new()
-    } else {
+    let banner_lines: Vec<&str> = if config.ui.show_banner && !config.ui.banner.is_empty() {
         config.ui.banner.lines().collect()
+    } else {
+        Vec::new()
     };
     let banner_height = (banner_lines.len() as u16).min(inner_height);
     let banner_width = banner_lines
@@ -81,8 +81,13 @@ mod tests {
     use super::*;
     use crate::domain::config::{Config, LayoutConfig, LayoutMode, UiConfig};
 
+    // The banner is hidden by default, so banner-geometry tests opt it in.
     fn config_with_layout(layout: LayoutConfig) -> Config {
         Config {
+            ui: UiConfig {
+                show_banner: true,
+                ..UiConfig::default()
+            },
             layout,
             ..Config::default()
         }
@@ -91,6 +96,7 @@ mod tests {
     fn bannerless_config_with_layout(layout: LayoutConfig) -> Config {
         Config {
             ui: UiConfig {
+                show_banner: true,
                 banner: String::new(),
                 ..UiConfig::default()
             },
@@ -100,8 +106,31 @@ mod tests {
     }
 
     #[test]
-    fn default_config_uses_padded_geometry() {
+    fn default_config_hides_banner_and_pads_geometry() {
+        // The banner is hidden by default, so it collapses to zero height and the
+        // prompt sits at the top padding edge.
         let cfg = Config::default();
+        let area = Rect::new(0, 0, 80, 24);
+        let rects = compute(area, &cfg);
+
+        assert_eq!(rects.banner.height, 0);
+
+        assert_eq!(rects.input.x, 4);
+        assert_eq!(rects.input.y, 2);
+        assert_eq!(rects.input.width, 72);
+        assert_eq!(rects.input.height, 1);
+
+        assert!(rects.separator.is_none());
+
+        assert_eq!(rects.list.x, 4);
+        assert_eq!(rects.list.y, 3);
+        assert_eq!(rects.list.width, 72);
+        assert_eq!(rects.list.height, 20 - 1);
+    }
+
+    #[test]
+    fn shown_banner_uses_padded_geometry() {
+        let cfg = config_with_layout(LayoutConfig::default());
         let area = Rect::new(0, 0, 80, 24);
         let rects = compute(area, &cfg);
 
@@ -115,8 +144,6 @@ mod tests {
         assert_eq!(rects.input.y, banner_lines + 2);
         assert_eq!(rects.input.width, 72);
         assert_eq!(rects.input.height, 1);
-
-        assert!(rects.separator.is_none());
 
         assert_eq!(rects.list.x, 4);
         assert_eq!(rects.list.y, banner_lines + 3);

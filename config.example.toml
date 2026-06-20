@@ -29,9 +29,10 @@
 # Wayland app-id. Change only if you also update legacy hyprlang window rules.
 # app_id = "hyprburst"
 
-# Placement on Hyprland 0.55+ Lua setups: "fullscreen" full-monitor overlay, or
-# "centered" floating window at width x height.
-# placement = "fullscreen"
+# Placement on Hyprland 0.55+ Lua setups: "centered" (default) floating window at
+# width x height, keeping your Hyprland border and rounding; or "fullscreen"
+# full-monitor overlay, which drops the border and rounded corners.
+# placement = "centered"
 
 # Centered window size in logical pixels. Must be >= 1.
 # width = 640
@@ -88,8 +89,11 @@
 # Invalid values (multi-char cursor_char, empty selected_marker) print a stderr
 # warning and fall back to defaults (page_size = 0 is a hard error).
 [ui]
-# Multi-line ASCII banner shown above the prompt. Use a TOML multi-line string
-# ("""...""") to preserve newlines. Set to "" to hide the banner.
+# Draw the banner above the prompt. Hidden by default; set to true to show it.
+# show_banner = false
+
+# Banner content, shown when show_banner = true. Use a TOML multi-line string
+# ("""...""") to preserve newlines. An empty string also hides the banner.
 # banner = """
 #  _                      _                    _
 # | |__  _   _ _ __  _ __| |__  _   _ _ __ ___| |_

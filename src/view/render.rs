@@ -24,7 +24,7 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
     let config = core.config();
     let view = core.view();
 
-    if banner_area.height > 0 && !config.ui.banner.is_empty() {
+    if banner_area.height > 0 && config.ui.show_banner && !config.ui.banner.is_empty() {
         let banner_style = Style::new()
             .fg(config.colors.banner)
             .add_modifier(Modifier::BOLD);
