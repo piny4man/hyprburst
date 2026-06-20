@@ -42,8 +42,27 @@ fn escape_exits_full_app() {
 }
 
 #[test]
-fn default_banner_renders_below_top_padding() {
+fn banner_hidden_by_default_prompt_uses_top_padding() {
     let mut app = App::new(Config::default());
+    let buf = render(&mut app, 80, 24);
+    let first_row = row_text(&buf, 2);
+    assert!(
+        first_row.contains("> "),
+        "banner is hidden by default, so the prompt should sit at the top padding, got {:?}",
+        first_row
+    );
+}
+
+#[test]
+fn shown_banner_renders_below_top_padding() {
+    let cfg = Config {
+        ui: UiConfig {
+            show_banner: true,
+            ..UiConfig::default()
+        },
+        ..Config::default()
+    };
+    let mut app = App::new(cfg);
     let buf = render(&mut app, 80, 24);
     let first_row = row_text(&buf, 2);
     assert!(
@@ -67,6 +86,7 @@ fn no_banner_config() -> Config {
 fn custom_banner_overrides_default() {
     let cfg = Config {
         ui: UiConfig {
+            show_banner: true,
             banner: "CUSTOM-BANNER".to_string(),
             ..UiConfig::default()
         },

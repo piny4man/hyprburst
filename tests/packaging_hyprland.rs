@@ -31,11 +31,9 @@ fn contains_all_documented_windowrules() {
     let expected_rules = [
         "windowrule = match:class ^(hyprburst)$, float on",
         "windowrule = match:class ^(hyprburst)$, pin on",
-        "windowrule = match:class ^(hyprburst)$, size (monitor_w) (monitor_h)",
-        "windowrule = match:class ^(hyprburst)$, move 0 0",
+        "windowrule = match:class ^(hyprburst)$, size 640 720",
+        "windowrule = match:class ^(hyprburst)$, center 1",
         "windowrule = match:class ^(hyprburst)$, opacity 0.9 0.9",
-        "windowrule = match:class ^(hyprburst)$, border_size 0",
-        "windowrule = match:class ^(hyprburst)$, no_shadow on",
         "windowrule = match:class ^(hyprburst)$, stay_focused on",
         "windowrule = match:class ^(hyprburst)$, dim_around on",
     ];
@@ -48,15 +46,19 @@ fn contains_all_documented_windowrules() {
 }
 
 #[test]
-fn does_not_use_percent_size_or_center_for_overlay() {
+fn centered_overlay_uses_fixed_size_not_monitor_fullscreen() {
     let conf = load_conf();
     assert!(
-        !conf.contains("size 100% 100%"),
-        "hyprburst.conf still uses percentage sizing; use monitor expressions instead"
+        conf.contains("windowrule = match:class ^(hyprburst)$, center 1"),
+        "hyprburst.conf should center the launcher window"
     );
     assert!(
-        !conf.contains("windowrule = match:class ^(hyprburst)$, center on"),
-        "hyprburst.conf still centers hyprburst; move it to 0 0 after monitor-sized resize"
+        !conf.contains("windowrule = match:class ^(hyprburst)$, size (monitor_w) (monitor_h)"),
+        "hyprburst.conf should use a fixed centered size, not full-monitor sizing"
+    );
+    assert!(
+        !conf.contains("windowrule = match:class ^(hyprburst)$, move 0 0"),
+        "hyprburst.conf should not pin the centered window to the top-left"
     );
 }
 

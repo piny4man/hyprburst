@@ -154,7 +154,11 @@ fn launch_rules_lua(config: &Config) -> String {
 
     match config.window.placement {
         WindowPlacement::Fullscreen => {
-            format!("{{ {common}, size = {{ \"monitor_w\", \"monitor_h\" }}, move = {{ 0, 0 }} }}")
+            // A full-monitor overlay has no visible edges, so drop the border and
+            // rounded corners. Centered windows keep the user's Hyprland decoration.
+            format!(
+                "{{ {common}, size = {{ \"monitor_w\", \"monitor_h\" }}, move = {{ 0, 0 }}, border_size = 0, rounding = 0 }}"
+            )
         }
         WindowPlacement::Centered => format!(
             "{{ {common}, size = {{ {}, {} }}, center = true }}",
@@ -334,10 +338,20 @@ mod tests {
 
     #[test]
     fn configured_fullscreen_rules_use_monitor_expressions() {
+        let cfg = Config::from_toml_str("[window]\nplacement = \"fullscreen\"\n").unwrap();
+        assert_eq!(
+            launch_rules_lua(&cfg),
+            "{ float = true, pin = true, stay_focused = true, opacity = \"0.85 0.85 override\", size = { \"monitor_w\", \"monitor_h\" }, move = { 0, 0 }, border_size = 0, rounding = 0 }"
+        );
+    }
+
+    #[test]
+    fn default_placement_is_centered() {
+        // Default config now centers rather than covering the monitor.
         let cfg = Config::default();
         assert_eq!(
             launch_rules_lua(&cfg),
-            "{ float = true, pin = true, stay_focused = true, opacity = \"0.85 0.85 override\", size = { \"monitor_w\", \"monitor_h\" }, move = { 0, 0 } }"
+            "{ float = true, pin = true, stay_focused = true, opacity = \"0.85 0.85 override\", size = { 640, 720 }, center = true }"
         );
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "hyprburst"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland"
 license = "GPL-3.0-or-later"
@@ -9,20 +9,20 @@ readme = "README.md"
 keywords = ["launcher", "hyprland", "tui", "arch-linux", "desktop"]
 categories = ["command-line-utilities", "gui"]
 include = [
-    "CHANGELOG.md",
-    "Cargo.lock",
-    "Cargo.toml",
-    "CODE_OF_CONDUCT.md",
-    "CONTRIBUTING.md",
-    "LICENSE",
-    "MAINTAINERS.md",
-    "README.md",
-    "SECURITY.md",
-    "config.example.toml",
-    "packaging/hyprburst.conf",
-    "packaging/hyprburst.lua",
-    "src/**",
-    "tests/**",
+  "CHANGELOG.md",
+  "Cargo.lock",
+  "Cargo.toml",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
+  "MAINTAINERS.md",
+  "README.md",
+  "SECURITY.md",
+  "config.example.toml",
+  "packaging/hyprburst.conf",
+  "packaging/hyprburst.lua",
+  "src/**",
+  "tests/**",
 ]
 
 [dependencies]

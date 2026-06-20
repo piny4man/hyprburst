@@ -72,9 +72,9 @@ impl Default for WindowConfig {
 pub enum WindowPlacement {
     /// Floating window sized to the monitor and moved to the top-left. This keeps
     /// blur-friendly overlay behavior without asking the client to fullscreen.
-    #[default]
     Fullscreen,
     /// Floating window centered at `window.width` x `window.height`.
+    #[default]
     Centered,
 }
 
@@ -128,6 +128,9 @@ pub enum LayoutMode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiConfig {
+    /// Whether the [`banner`](Self::banner) is drawn above the prompt. Off by
+    /// default; flipping this on shows the (default or overridden) banner art.
+    pub show_banner: bool,
     pub banner: String,
     pub prompt: String,
     pub page_size: usize,
@@ -155,6 +158,7 @@ pub struct Colors {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            show_banner: false,
             banner: DEFAULT_BANNER.to_string(),
             prompt: DEFAULT_PROMPT.to_string(),
             page_size: DEFAULT_PAGE_SIZE,
@@ -279,6 +283,7 @@ struct RawConfig {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawUi {
+    show_banner: Option<bool>,
     banner: Option<String>,
     prompt: Option<String>,
     page_size: Option<usize>,
@@ -497,6 +502,7 @@ impl RawUi {
         };
 
         Ok(UiConfig {
+            show_banner: self.show_banner.unwrap_or(defaults.show_banner),
             banner: self.banner.unwrap_or(defaults.banner),
             prompt: self.prompt.unwrap_or(defaults.prompt),
             page_size: self.page_size.unwrap_or(defaults.page_size),
@@ -829,9 +835,19 @@ sparkle = "red""#;
         assert_eq!(cfg.window.app_id, "hyprburst");
         assert_eq!(cfg.window.width, 640);
         assert_eq!(cfg.window.height, 720);
-        assert_eq!(cfg.window.placement, WindowPlacement::Fullscreen);
+        assert_eq!(cfg.window.placement, WindowPlacement::Centered);
         assert!(cfg.window.transparent);
         assert_eq!(cfg.window.opacity, 0.85);
+    }
+
+    #[test]
+    fn banner_is_hidden_by_default_and_toggles_on() {
+        assert!(!Config::default().ui.show_banner);
+
+        let cfg = Config::from_toml_str("[ui]\nshow_banner = true\n").unwrap();
+        assert!(cfg.ui.show_banner);
+        // The default banner art is preserved as the content, ready to show.
+        assert_eq!(cfg.ui.banner, Config::default().ui.banner);
     }
 
     #[test]
