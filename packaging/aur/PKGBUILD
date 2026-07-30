@@ -1,7 +1,7 @@
 # Maintainer: piny4man <development@pinya.dev>
 
 pkgname=hyprburst
-pkgver=0.5.2
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland"
 arch=('x86_64')

@@ -1,13 +1,11 @@
-//! The GUI launcher window: a GL-rendered launcher that owns its surface without
-//! a terminal emulator.
+//! The GUI launcher window and shared GL cell renderer.
 //!
 //! A winit window, a hand-written OpenGL cell renderer (glutin context, glow draw,
 //! and an `ab_glyph` glyph atlas), and an in-process [`LauncherCore`]. Because we
-//! own the TUI, the launcher is painted with [`render_core`] straight into a
-//! ratatui [`Buffer`] and that buffer's cells are drawn directly — no PTY, no
-//! child process, no terminal-emulator round-trip. This is the native-GUI speed
-//! with the exact ratatui look (banner, prompt, list, selection marker, accent
-//! colors), and it lets Hyprland's blur/transparency show through.
+//! The default frontend paints a `rio-vt` grid backed by a PTY running
+//! `hyprburst tui`. The `native` fallback paints [`render_core`] straight into a
+//! ratatui [`Buffer`] without a PTY. Both paths share the same renderer, exact
+//! ratatui look, and Hyprland blur/transparency behavior.
 //!
 //! [`run`] opens the window and drives the launcher interactively: Enter launches
 //! the selected app via the core (which dispatches through `hyprctl`) and the
@@ -19,6 +17,8 @@
 //! Hyprland session.
 
 use std::num::NonZeroU32;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -46,10 +46,9 @@ use crate::bench;
 use crate::domain::config::Config;
 use crate::domain::launcher_core::{LauncherAction, LauncherCore};
 use crate::gpu::grid::{Atlas, CellMetrics, GlyphKey, cell_rect, grid_size};
+use crate::gpu::rio::{KeyInput, Session};
 use crate::view::render::render_core;
 
-/// Column label this renderer fills in the benchmark table.
-const VARIANT: &str = "gui";
 /// Atlas texture dimensions — ample for a launcher's character set.
 const ATLAS_W: u32 = 2048;
 const ATLAS_H: u32 = 2048;
@@ -72,6 +71,7 @@ pub fn run(
     start: Instant,
 ) -> Result<(), Box<dyn std::error::Error>> {
     MEASURE.store(measure, Ordering::SeqCst);
+    FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
     let font = match crate::gpu::font::resolve_font_bytes(config.font.path.as_deref())
         .and_then(|bytes| FontVec::try_from_vec(bytes).ok())
@@ -85,7 +85,7 @@ pub fn run(
         }
     };
 
-    let event_loop = EventLoop::new().map_err(|err| {
+    let event_loop = EventLoop::<()>::with_user_event().build().map_err(|err| {
         format!("cannot create event loop ({err}) — is a Wayland display available?")
     })?;
 
@@ -94,13 +94,56 @@ pub fn run(
     Ok(())
 }
 
+/// Open the default Rio-backed frontend. Rio owns the PTY and VT grid while the
+/// existing OpenGL renderer keeps ownership of the native window.
+pub fn run_rio(
+    config: Config,
+    measure: bool,
+    start: Instant,
+) -> Result<(), Box<dyn std::error::Error>> {
+    MEASURE.store(measure, Ordering::SeqCst);
+    FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
+
+    let font = match crate::gpu::font::resolve_font_bytes(config.font.path.as_deref())
+        .and_then(|bytes| FontVec::try_from_vec(bytes).ok())
+    {
+        Some(font) => font,
+        None => {
+            return Err(
+                "no monospace font found; set [font] path in config or $HYPRBURST_FONT to a .ttf/.otf path"
+                    .into(),
+            );
+        }
+    };
+    let executable = std::env::current_exe()?;
+    let event_loop = EventLoop::<()>::with_user_event().build().map_err(|err| {
+        format!("cannot create event loop ({err}) — is a Wayland display available?")
+    })?;
+    let proxy = event_loop.create_proxy();
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        let _ = proxy.send_event(());
+    });
+    let mut app = App::new_rio(start, font, config, executable, wake);
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+
+enum Frontend {
+    Launcher(Box<LauncherCore>),
+    Rio {
+        session: Option<Session>,
+        executable: PathBuf,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    },
+}
+
 /// The winit application: holds GL state once resumed, the in-process launcher,
 /// the grid size, and the GUI appearance resolved from config. All window/GL
 /// mutation happens on the main thread.
 struct App {
     start: Instant,
     font: FontVec,
-    core: LauncherCore,
+    frontend: Frontend,
     gl: Option<GlState>,
     /// Pixel size of one monospace cell, derived from the font + DPI once the
     /// window exists. A 1×1 placeholder until then.
@@ -117,6 +160,7 @@ struct App {
     font_px: f32,
     /// Default/Reset foreground as normalized RGB (`[colors] foreground`).
     fg: [f32; 3],
+    bg: [f32; 3],
     /// Clear color as normalized RGBA: transparent for the blur, or the opaque
     /// `[colors] background` when `transparent = false`.
     clear: [f32; 4],
@@ -130,6 +174,26 @@ struct App {
 
 impl App {
     fn new(start: Instant, font: FontVec, config: Config) -> Self {
+        let frontend = Frontend::Launcher(Box::new(LauncherCore::new(config.clone())));
+        Self::with_frontend(start, font, config, frontend)
+    }
+
+    fn new_rio(
+        start: Instant,
+        font: FontVec,
+        config: Config,
+        executable: PathBuf,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let frontend = Frontend::Rio {
+            session: None,
+            executable,
+            wake,
+        };
+        Self::with_frontend(start, font, config, frontend)
+    }
+
+    fn with_frontend(start: Instant, font: FontVec, config: Config, frontend: Frontend) -> Self {
         let fg = rgb_norm(color_rgb(config.colors.foreground));
         let (br, bg_, bb) = color_rgb(config.colors.background);
         let bg_norm = [br as f32 / 255.0, bg_ as f32 / 255.0, bb as f32 / 255.0];
@@ -157,10 +221,11 @@ impl App {
             transparent: config.window.transparent,
             font_px: config.font.size,
             fg,
+            bg: bg_norm,
             clear,
             panel,
             fade_start: None,
-            core: LauncherCore::new(config),
+            frontend,
             gl: None,
             cell: CellMetrics::new(1, 1),
             grid: (1, 1),
@@ -196,7 +261,7 @@ fn font_metrics(font: &FontVec, scale_factor: f64, base_px: f32) -> FontMetrics 
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<()> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gl.is_some() {
             return;
@@ -223,7 +288,27 @@ impl ApplicationHandler for App {
         let grid = grid_size((size.width, size.height), self.cell);
         self.grid = (grid.cols, grid.rows);
 
-        gl.window.request_redraw();
+        match &mut self.frontend {
+            Frontend::Launcher(_) => gl.window.request_redraw(),
+            Frontend::Rio {
+                session,
+                executable,
+                wake,
+            } => match Session::spawn(
+                executable,
+                self.grid,
+                (size.width, size.height),
+                (self.cell.cell_w, self.cell.cell_h),
+                Arc::clone(wake),
+            ) {
+                Ok(rio) => *session = Some(rio),
+                Err(err) => {
+                    eprintln!("hyprburst: Rio PTY bootstrap failed: {err}");
+                    event_loop.exit();
+                    return;
+                }
+            },
+        }
         self.gl = Some(gl);
     }
 
@@ -236,27 +321,68 @@ impl ApplicationHandler for App {
                 }
                 let grid = grid_size((size.width, size.height), self.cell);
                 self.grid = (grid.cols, grid.rows);
+                if let Frontend::Rio {
+                    session: Some(session),
+                    ..
+                } = &self.frontend
+                {
+                    session.resize(
+                        self.grid,
+                        (size.width, size.height),
+                        (self.cell.cell_w, self.cell.cell_h),
+                    );
+                }
                 if let Some(gl) = &self.gl {
                     gl.window.request_redraw();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed
-                    && let Some(action) = key_to_action(&event)
-                {
-                    self.core.apply(action);
-                    if !self.core.running() {
-                        // Enter launched (the core dispatched `hyprctl`) or Esc
-                        // cancelled — either way, tear down the window.
-                        event_loop.exit();
-                    } else if let Some(gl) = &self.gl {
-                        gl.window.request_redraw();
+                if event.state == ElementState::Pressed {
+                    match &mut self.frontend {
+                        Frontend::Launcher(core) => {
+                            if let Some(action) = key_to_action(&event) {
+                                core.apply(action);
+                                if !core.running() {
+                                    event_loop.exit();
+                                } else if let Some(gl) = &self.gl {
+                                    gl.window.request_redraw();
+                                }
+                            }
+                        }
+                        Frontend::Rio {
+                            session: Some(session),
+                            ..
+                        } => {
+                            if let Some(key) = terminal_key(&event) {
+                                session.send_key(key);
+                            }
+                        }
+                        Frontend::Rio { session: None, .. } => {}
                     }
                 }
             }
             WindowEvent::RedrawRequested => {
+                if let Frontend::Rio {
+                    session: Some(session),
+                    ..
+                } = &self.frontend
+                    && session.closed()
+                {
+                    event_loop.exit();
+                    return;
+                }
                 if let Some(gl) = &mut self.gl {
-                    let frame = build_cells(&mut self.core, self.grid, self.fg);
+                    let frame = match &mut self.frontend {
+                        Frontend::Launcher(core) => build_cells(core, self.grid, self.fg),
+                        Frontend::Rio {
+                            session: Some(session),
+                            ..
+                        } => build_rio_cells(session, self.fg, self.bg),
+                        Frontend::Rio { session: None, .. } => Frame {
+                            bgs: Vec::new(),
+                            glyphs: Vec::new(),
+                        },
+                    };
                     // Fade-in: ease-out ramp of the global alpha over FADE_SECS,
                     // measured from the first painted frame.
                     let fade_start = self.fade_start.get_or_insert_with(Instant::now);
@@ -288,12 +414,31 @@ impl ApplicationHandler for App {
                         .compare_exchange(0, ns, Ordering::SeqCst, Ordering::SeqCst)
                         .is_ok();
                     if first && MEASURE.load(Ordering::SeqCst) {
-                        report(ns);
+                        let variant = match &self.frontend {
+                            Frontend::Launcher(_) => "gui",
+                            Frontend::Rio { .. } => "rio-vt",
+                        };
+                        report(variant, ns);
                         event_loop.exit();
                     }
                 }
             }
             _ => {}
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        if let Frontend::Rio {
+            session: Some(session),
+            ..
+        } = &self.frontend
+            && session.closed()
+        {
+            event_loop.exit();
+            return;
+        }
+        if let Some(gl) = &self.gl {
+            gl.window.request_redraw();
         }
     }
 }
@@ -339,6 +484,32 @@ fn build_cells(core: &mut LauncherCore, grid: (u16, u16), default_fg: [f32; 3]) 
     Frame { bgs, glyphs }
 }
 
+fn build_rio_cells(session: &Session, default_fg: [f32; 3], default_bg: [f32; 3]) -> Frame {
+    let frame = session.frame(default_fg, default_bg);
+    Frame {
+        bgs: frame
+            .backgrounds
+            .into_iter()
+            .map(|cell| BgCell {
+                col: cell.col,
+                row: cell.row,
+                color: cell.color,
+            })
+            .collect(),
+        glyphs: frame
+            .glyphs
+            .into_iter()
+            .map(|cell| CellInstance {
+                col: cell.col,
+                row: cell.row,
+                ch: cell.ch,
+                bold: cell.bold,
+                color: cell.color,
+            })
+            .collect(),
+    }
+}
+
 /// Translate a winit key press into an abstract [`LauncherAction`] — the same
 /// vocabulary the crossterm TUI maps. Keys with no launcher meaning return `None`.
 fn key_to_action(event: &KeyEvent) -> Option<LauncherAction> {
@@ -359,6 +530,23 @@ fn key_to_action(event: &KeyEvent) -> Option<LauncherAction> {
             let ch = text.chars().next().filter(|c| !c.is_control())?;
             LauncherAction::Insert(ch)
         }
+    })
+}
+
+fn terminal_key(event: &KeyEvent) -> Option<KeyInput> {
+    Some(match &event.logical_key {
+        Key::Named(NamedKey::Enter) => KeyInput::Enter,
+        Key::Named(NamedKey::Escape) => KeyInput::Escape,
+        Key::Named(NamedKey::Tab) => KeyInput::Tab,
+        Key::Named(NamedKey::Backspace) => KeyInput::Backspace,
+        Key::Named(NamedKey::PageUp) => KeyInput::PageUp,
+        Key::Named(NamedKey::PageDown) => KeyInput::PageDown,
+        Key::Named(NamedKey::ArrowUp) => KeyInput::Up,
+        Key::Named(NamedKey::ArrowDown) => KeyInput::Down,
+        Key::Named(NamedKey::ArrowLeft) => KeyInput::Left,
+        Key::Named(NamedKey::ArrowRight) => KeyInput::Right,
+        Key::Named(NamedKey::Space) => KeyInput::Text(" ".to_string()),
+        _ => KeyInput::Text(event.text.as_ref()?.to_string()),
     })
 }
 
@@ -888,9 +1076,9 @@ fn base16_rgb(i: u8) -> (u8, u8, u8) {
 
 /// Print the live `gui` column: cold-start (to first presented frame) plus
 /// footprint, reusing the contract the baseline column uses.
-fn report(cold_start_ns: u64) {
+fn report(variant: &str, cold_start_ns: u64) {
     let footprint = bench::live_footprint();
-    let metrics = [bench::probe_metrics(VARIANT, cold_start_ns, footprint)];
+    let metrics = [bench::probe_metrics(variant, cold_start_ns, footprint)];
     print!(
         "{}\n\n{}\n",
         bench::render_table(&metrics),

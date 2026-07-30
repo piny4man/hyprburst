@@ -174,20 +174,31 @@ fn current_exe_command() -> String {
         .unwrap_or_else(|| "hyprburst".to_string())
 }
 
+fn configured_child_command(executable: &str, args: &[&str]) -> String {
+    let mut command = format!("env {}=1 {}", CHILD_ENV, shell_quote(executable));
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    command
+}
+
 /// Relaunch hyprburst through Hyprland's Lua `exec_cmd(..., rules)` path so the
 /// user's TOML placement/opacity choices can be applied without maintaining
 /// static window rules in `hyprland.lua`. Returns `true` when the parent process
 /// successfully handed off to Hyprland and should exit.
 pub fn dispatch_configured_launcher(config: &Config) -> bool {
+    dispatch_configured_launcher_with_args(config, &[])
+}
+
+/// Relaunch a launcher subcommand while preserving the dynamic Hyprland window
+/// rules used by the default frontend.
+pub fn dispatch_configured_launcher_with_args(config: &Config, args: &[&str]) -> bool {
     if std::env::var_os(CHILD_ENV).is_some() || dispatch_syntax() != DispatchSyntax::Lua {
         return false;
     }
 
-    let command = format!(
-        "env {}=1 {}",
-        CHILD_ENV,
-        shell_quote(&current_exe_command())
-    );
+    let command = configured_child_command(&current_exe_command(), args);
     let expression = format!(
         "hl.dsp.exec_cmd({}, {})",
         lua_quote(&command),
@@ -371,5 +382,13 @@ mod tests {
     fn shell_quote_handles_spaces_and_quotes() {
         assert_eq!(shell_quote("/usr/bin/hyprburst"), "/usr/bin/hyprburst");
         assert_eq!(shell_quote("/tmp/my app's/bin"), "'/tmp/my app'\\''s/bin'");
+    }
+
+    #[test]
+    fn configured_child_command_preserves_frontend_arguments() {
+        assert_eq!(
+            configured_child_command("/tmp/hypr burst", &["rio"]),
+            "env HYPRBURST_CHILD=1 '/tmp/hypr burst' rio"
+        );
     }
 }

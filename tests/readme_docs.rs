@@ -56,6 +56,10 @@ fn readme_explains_every_command() {
         "README should explain the `hyprburst tui` command"
     );
     assert!(
+        readme.contains("hyprburst native"),
+        "README should explain the direct `hyprburst native` fallback"
+    );
+    assert!(
         readme.contains("--bench-startup"),
         "README should explain the `--bench-startup` flag"
     );

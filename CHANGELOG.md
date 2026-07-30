@@ -5,6 +5,16 @@ All notable changes to Hyprburst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-30
+
+### Added
+
+- Rio-backed default frontend using `rio-vt` for PTY lifecycle, VT parsing, and
+  terminal grid state while retaining Hyprburst's native OpenGL renderer.
+- `hyprburst native` direct in-process fallback for comparison and recovery.
+- First-presentation benchmarks for both frontends and documented prototype
+  findings.
+
 ## [0.5.2] - 2026-06-20
 
 ### Added

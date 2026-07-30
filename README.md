@@ -2,11 +2,12 @@
 
 A fast application launcher for Arch Linux + Hyprland, written in Rust.
 
-Hyprburst opens its own GPU-rendered window with a semi-transparent blurred background — it owns its Wayland surface, so there's no terminal to spawn or guess. It displays apps in a grid with icons, uses hybrid fuzzy/prefix search with recency+frequency scoring, and tracks launch history in SQLite for smart ranking.
+Hyprburst opens its own GPU-rendered window with a semi-transparent blurred background. Rio's embeddable terminal engine manages the launcher's PTY and VT grid, while Hyprburst keeps ownership of its Wayland surface and OpenGL renderer. It displays apps in a grid with icons, uses hybrid fuzzy/prefix search with recency+frequency scoring, and tracks launch history in SQLite for smart ranking.
 
 ## Features
 
-- **Native GPU window** — winit + OpenGL cell renderer paints the ratatui layout directly; owns its Wayland surface for proper blur/transparency, no terminal needed
+- **Rio terminal engine** — `rio-vt` manages PTY lifecycle, VT parsing, resize, input, and terminal grid state
+- **Native GPU window** — winit + OpenGL paints Rio's grid while owning the Wayland surface for proper blur/transparency
 - **Modern aesthetic** — Clean monospace, subtle accent colors, custom ASCII art banners
 - **Fast** — <50ms startup, instant search results as you type
 - **Smart ranking** — Results ranked by recency (exponential decay) + frequency (launch count)
@@ -31,7 +32,7 @@ Hyprburst opens its own GPU-rendered window with a semi-transparent blurred back
 ```
 hyprburst/
 ├── src/
-│   ├── main.rs            # Entry point: window launch, `tui` fallback, bench modes
+│   ├── main.rs            # Entry point: Rio default, native/TUI fallbacks, bench modes
 │   ├── lib.rs             # Module tree (domain / view / gpu / tui / system / bench)
 │   ├── bench.rs           # Footprint probes for `--measure` / `--bench-startup`
 │   ├── domain/            # Frontend-agnostic state + data (no rendering)
@@ -44,8 +45,9 @@ hyprburst/
 │   ├── view/             # Shared ratatui-buffer painting (both frontends)
 │   │   ├── render.rs       # render_core: paints the launcher into a Buffer
 │   │   └── layout.rs       # Pure layout geometry (list + grid modes)
-│   ├── gpu/              # GPU window frontend (the default `hyprburst`)
-│   │   ├── window.rs       # winit + glutin + glow cell renderer; GL-native fade-in
+│   ├── gpu/              # Native window/renderer and Rio VT adapter
+│   │   ├── window.rs       # winit + glutin + glow cell renderer; frontend routing
+│   │   ├── rio.rs          # rio-vt PTY, terminal grid, input, resize, and snapshots
 │   │   ├── grid.rs         # Cell metrics, glyph atlas, grid geometry
 │   │   └── font.rs         # Cell-font resolution (config / $HYPRBURST_FONT / Nerd Font)
 │   ├── tui/              # Crossterm/ratatui fallback frontend (`hyprburst tui`)
@@ -110,13 +112,17 @@ Hyprburst exposes a single binary with a tiny command surface. Run `hyprburst he
 
 | Command | What it does |
 |---------|--------------|
-| `hyprburst` | Opens the GPU-rendered launcher **window**. It owns its own Wayland surface, so it works from a graphical context with no controlling terminal — this is what the `Super+Space` Hyprland bind invokes. |
+| `hyprburst` | Opens the default Rio-backed launcher **window**. `rio-vt` owns the PTY/grid and Hyprburst owns the Wayland/OpenGL window — this is what the `Super+Space` Hyprland bind invokes. |
 | `hyprburst tui` | Runs the launcher **inline** in the current terminal (crossterm), with no window. The fallback for SSH / no-GPU sessions, and handy for testing the UI from a shell. |
+| `hyprburst native` | Opens the direct in-process launcher without a PTY. Retained as a fallback and comparison path. |
 | `hyprburst help` (`-h`, `--help`) | Prints the usage summary and exits. |
-| `hyprburst --measure` | Opens the window, prints cold-start latency + peak RSS at the first frame, then exits. |
+| `hyprburst --measure` | Measures the default Rio-backed frontend to its first PTY-backed frame. |
+| `hyprburst native --measure` | Measures the direct in-process fallback to its first frame. |
 | `hyprburst --bench-startup` | Times the cold startup path (config load + app init), prints peak RSS, and exits without opening the UI. See [Performance](#performance). |
 
 Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `Enter` to launch the selected app, `Escape` to close.
+
+See [Rio Prototype Findings](docs/rio-prototype.md) for the architecture, measurements, limitations, and promotion decision.
 
 When opening an app from its `.desktop` file, Hyprburst removes freedesktop launch target placeholders such as `%f`, `%F`, `%u`, and `%U`. That matches normal app-launcher behavior for launches without a selected file or URL, so apps such as Inkscape start normally instead of receiving a literal placeholder argument.
 
@@ -381,6 +387,8 @@ hyprburst peak RSS: ~5 MB
 Both well under the <50ms startup budget and minimal-memory goal.
 
 CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startup.rs` — generous headroom over the ~50ms local goal so shared CI runners don't flake. If the test ever does flake, it will be moved behind `#[ignore]` and run via `cargo test -- --ignored` as an opt-in lane.
+
+Compare first presentation with `hyprburst --measure` (Rio default) and `hyprburst native --measure` (direct fallback). Reference results are recorded in [Rio Prototype Findings](docs/rio-prototype.md).
 
 ## Troubleshooting
 
