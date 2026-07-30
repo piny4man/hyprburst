@@ -1,13 +1,11 @@
-//! The GUI launcher window: a GL-rendered launcher that owns its surface without
-//! a terminal emulator.
+//! The GUI launcher window and shared GL cell renderer.
 //!
 //! A winit window, a hand-written OpenGL cell renderer (glutin context, glow draw,
 //! and an `ab_glyph` glyph atlas), and an in-process [`LauncherCore`]. Because we
-//! own the TUI, the launcher is painted with [`render_core`] straight into a
-//! ratatui [`Buffer`] and that buffer's cells are drawn directly — no PTY, no
-//! child process, no terminal-emulator round-trip. This is the native-GUI speed
-//! with the exact ratatui look (banner, prompt, list, selection marker, accent
-//! colors), and it lets Hyprland's blur/transparency show through.
+//! The default frontend paints a `rio-vt` grid backed by a PTY running
+//! `hyprburst tui`. The `native` fallback paints [`render_core`] straight into a
+//! ratatui [`Buffer`] without a PTY. Both paths share the same renderer, exact
+//! ratatui look, and Hyprland blur/transparency behavior.
 //!
 //! [`run`] opens the window and drives the launcher interactively: Enter launches
 //! the selected app via the core (which dispatches through `hyprctl`) and the
@@ -96,8 +94,8 @@ pub fn run(
     Ok(())
 }
 
-/// Open the isolated Rio-backed prototype. Rio owns the PTY and VT grid while
-/// the existing OpenGL renderer keeps ownership of the native window.
+/// Open the default Rio-backed frontend. Rio owns the PTY and VT grid while the
+/// existing OpenGL renderer keeps ownership of the native window.
 pub fn run_rio(
     config: Config,
     measure: bool,

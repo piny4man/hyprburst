@@ -38,9 +38,9 @@ rio-vt = "0.5.1"
 teletypewriter = "0.5.1"
 corcovado = "0.5.1"
 
-# The windowed launcher owns its own Wayland surface and paints the ratatui
-# `Buffer` from `render_core` directly through a hand-written GL cell renderer —
-# no Skia, no terminal-emulator round-trip, no PTY. winit drives the event loop;
+# The windowed launcher owns its Wayland surface and uses a hand-written GL cell
+# renderer. The default frontend paints a rio-vt grid; `hyprburst native` paints
+# `render_core`'s ratatui Buffer directly. winit drives the event loop;
 # glutin/glutin-winit create the GL context/surface; glow is the GL binding;
 # ab_glyph rasterizes glyphs; raw-window-handle bridges winit ↔ glutin.
 winit = "0.30"

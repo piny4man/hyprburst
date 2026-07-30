@@ -7,11 +7,11 @@ Rio's terminal engine, but `librio` adds a C ABI intended for non-Rust hosts.
 Using `rio-vt` keeps the integration type-safe and avoids an unnecessary FFI
 boundary, static library, generated header, and `unsafe` ownership contract.
 
-The default frontend remains Hyprburst's in-process launcher. Run the isolated
-prototype with:
+After manual validation, the Rio-backed implementation became the default. Run
+the retained direct in-process fallback with:
 
 ```sh
-hyprburst rio
+hyprburst native
 ```
 
 ## Architecture
@@ -40,18 +40,18 @@ Hyprland session:
 
 ```text
 variant  cold start to first presented frame
-gui      70.406 ms
-rio-vt   77.466 ms
+gui      66.494 ms
+rio-vt   66.891 ms
 ```
 
 Commands:
 
 ```sh
-cargo run --release -- rio --measure
 target/release/hyprburst --measure
+target/release/hyprburst native --measure
 ```
 
-The Rio prototype was 7.060 ms slower in this single comparison. Both results
+The Rio path was 0.397 ms slower in this single comparison. Both results
 are below the existing 250 ms CI startup ceiling, although that ceiling guards
 config loading and launcher initialization rather than a live Wayland frame.
 The native path remains above the aspirational 50 ms local target on this
@@ -71,16 +71,14 @@ portable benchmark.
 - Peak RSS from the existing probe is process-scoped and does not provide a
   reliable aggregate for the parent plus PTY child.
 
-## Recommendation
+## Promotion Decision
 
-Keep `hyprburst rio` as an experimental comparison and do not replace the
-default frontend. The prototype proves that Rio can own PTY lifecycle, parsing,
-resize, input, grid state, and child-exit handling while Hyprburst retains its
-native renderer and Hyprland behavior. It does not currently improve startup
-time, and the extra process and terminal dependency graph are unnecessary for
-the launcher's existing in-process UI.
+Promote the Rio-backed path to bare `hyprburst` after successful manual testing
+of typing, navigation, launch, resize, and close behavior. Keep `hyprburst
+native` as a fallback and performance comparison. The promotion favors Rio's
+working terminal semantics and reusable engine with near-parity in the latest
+cold-start comparison, despite the extra child process.
 
-Continue only if future requirements need full terminal semantics or if the Rio
-integration can replace enough custom code to offset its process and dependency
-cost. Before promotion, add complete key encoding, aggregate memory measurement,
-dirty-row rendering, and repeated cold/warm benchmarks.
+Future work should add complete key encoding, aggregate memory measurement,
+dirty-row rendering, and repeated cold/warm benchmarks. Those limitations do not
+block the launcher interactions exercised by the default path.

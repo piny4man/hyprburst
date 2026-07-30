@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Experimental `hyprburst rio` frontend using `rio-vt` for PTY lifecycle, VT
-  parsing, and terminal grid state while retaining Hyprburst's native OpenGL
-  renderer and default GPU frontend.
-- `hyprburst rio --measure` first-presentation benchmark and documented prototype
+- Rio-backed default frontend using `rio-vt` for PTY lifecycle, VT parsing, and
+  terminal grid state while retaining Hyprburst's native OpenGL renderer.
+- `hyprburst native` direct in-process fallback for comparison and recovery.
+- First-presentation benchmarks for both frontends and documented prototype
   findings.
 
 ## [0.5.2] - 2026-06-20

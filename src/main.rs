@@ -16,7 +16,7 @@ USAGE:
 
 COMMANDS:
     tui       Run the launcher inline in the current terminal (crossterm fallback)
-    rio       Prototype the launcher through a rio-vt managed PTY
+    native    Run the direct in-process GPU frontend (fallback/comparison)
     help      Print this help message
 
 FLAGS:
@@ -24,10 +24,37 @@ FLAGS:
     --measure            Open the window, report cold-start + RSS at first frame, then exit
     --bench-startup      Measure config-load + App::new latency and exit
 
-With no command, hyprburst opens its launcher window (GPU-rendered, owns its own
-Wayland surface). Use `hyprburst tui` to run inline in the current terminal or
-`hyprburst rio` to exercise the experimental rio-vt PTY frontend.
+With no command, hyprburst opens its Rio-backed launcher window. Use
+`hyprburst native` for the direct in-process frontend or `hyprburst tui` to run
+inline in the current terminal.
 ";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    BenchStartup,
+    Rio { measure: bool },
+    Native { measure: bool },
+    Tui,
+    Help,
+    Unknown(String),
+}
+
+fn parse_command(args: &[String]) -> Command {
+    if args.iter().any(|arg| arg == "--bench-startup") {
+        return Command::BenchStartup;
+    }
+
+    match args.first().map(String::as_str) {
+        None => Command::Rio { measure: false },
+        Some("--measure") => Command::Rio { measure: true },
+        Some("native") => Command::Native {
+            measure: args.iter().any(|arg| arg == "--measure"),
+        },
+        Some("tui") => Command::Tui,
+        Some("help" | "--help" | "-h") => Command::Help,
+        Some(other) => Command::Unknown(other.to_string()),
+    }
+}
 
 /// Load config for the launcher, falling back to defaults (with a stderr note)
 /// if the file is missing or invalid — so a stale config never blocks the
@@ -92,7 +119,7 @@ fn run_tui() -> io::Result<()> {
 /// cold-start / RSS report.
 fn run_window(measure: bool, start: Instant) -> ExitCode {
     let config = load_config();
-    if !measure && hyprland::dispatch_configured_launcher(&config) {
+    if !measure && hyprland::dispatch_configured_launcher_with_args(&config, &["native"]) {
         return ExitCode::SUCCESS;
     }
 
@@ -107,7 +134,7 @@ fn run_window(measure: bool, start: Instant) -> ExitCode {
 
 fn run_rio(measure: bool, start: Instant) -> ExitCode {
     let config = load_config();
-    if !measure && hyprland::dispatch_configured_launcher_with_args(&config, &["rio"]) {
+    if !measure && hyprland::dispatch_configured_launcher(&config) {
         return ExitCode::SUCCESS;
     }
 
@@ -124,26 +151,16 @@ fn main() -> ExitCode {
     let start = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    if args.iter().any(|a| a == "--bench-startup") {
-        return io_to_exit(bench_startup());
-    }
-
-    if args.first().is_some_and(|arg| arg == "rio") {
-        return run_rio(args.iter().any(|arg| arg == "--measure"), start);
-    }
-
-    if args.iter().any(|a| a == "--measure") {
-        return run_window(true, start);
-    }
-
-    match args.first().map(String::as_str) {
-        None => run_window(false, start),
-        Some("tui") => io_to_exit(run_tui()),
-        Some("help" | "--help" | "-h") => {
+    match parse_command(&args) {
+        Command::BenchStartup => io_to_exit(bench_startup()),
+        Command::Rio { measure } => run_rio(measure, start),
+        Command::Native { measure } => run_window(measure, start),
+        Command::Tui => io_to_exit(run_tui()),
+        Command::Help => {
             print!("{}", HELP);
             ExitCode::SUCCESS
         }
-        Some(other) => {
+        Command::Unknown(other) => {
             eprintln!("hyprburst: unknown command '{}'\n", other);
             eprint!("{}", HELP);
             ExitCode::from(2)
@@ -160,5 +177,35 @@ fn io_to_exit(result: io::Result<()>) -> ExitCode {
             eprintln!("hyprburst: {}", err);
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn bare_command_selects_rio_and_native_is_explicit() {
+        assert_eq!(parse_command(&args(&[])), Command::Rio { measure: false });
+        assert_eq!(
+            parse_command(&args(&["native"])),
+            Command::Native { measure: false }
+        );
+    }
+
+    #[test]
+    fn measurement_targets_the_selected_frontend() {
+        assert_eq!(
+            parse_command(&args(&["--measure"])),
+            Command::Rio { measure: true }
+        );
+        assert_eq!(
+            parse_command(&args(&["native", "--measure"])),
+            Command::Native { measure: true }
+        );
     }
 }

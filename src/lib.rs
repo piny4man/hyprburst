@@ -6,7 +6,7 @@
 //!   history, icons, and config (no rendering).
 //! - [`view`] — ratatui `Buffer` painting (`render_core` + layout) shared by both
 //!   frontends.
-//! - [`gpu`] — the native GPU launcher and isolated Rio VT prototype.
+//! - [`gpu`] — the Rio-backed default and direct native fallback.
 //! - [`tui`] — the crossterm/ratatui fallback for SSH / no-GPU sessions.
 //! - [`system`] — Hyprland integration.
 //! - [`bench`] — the live `--measure` / `--bench-startup` footprint probes.
