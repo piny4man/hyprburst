@@ -16,6 +16,7 @@ USAGE:
 
 COMMANDS:
     tui       Run the launcher inline in the current terminal (crossterm fallback)
+    rio       Prototype the launcher through a rio-vt managed PTY
     help      Print this help message
 
 FLAGS:
@@ -24,7 +25,8 @@ FLAGS:
     --bench-startup      Measure config-load + App::new latency and exit
 
 With no command, hyprburst opens its launcher window (GPU-rendered, owns its own
-Wayland surface). Use `hyprburst tui` to run inline in the current terminal.
+Wayland surface). Use `hyprburst tui` to run inline in the current terminal or
+`hyprburst rio` to exercise the experimental rio-vt PTY frontend.
 ";
 
 /// Load config for the launcher, falling back to defaults (with a stderr note)
@@ -103,12 +105,31 @@ fn run_window(measure: bool, start: Instant) -> ExitCode {
     }
 }
 
+fn run_rio(measure: bool, start: Instant) -> ExitCode {
+    let config = load_config();
+    if !measure && hyprland::dispatch_configured_launcher_with_args(&config, &["rio"]) {
+        return ExitCode::SUCCESS;
+    }
+
+    match window::run_rio(config, measure, start) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("hyprburst: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let start = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--bench-startup") {
         return io_to_exit(bench_startup());
+    }
+
+    if args.first().is_some_and(|arg| arg == "rio") {
+        return run_rio(args.iter().any(|arg| arg == "--measure"), start);
     }
 
     if args.iter().any(|a| a == "--measure") {

@@ -112,11 +112,15 @@ Hyprburst exposes a single binary with a tiny command surface. Run `hyprburst he
 |---------|--------------|
 | `hyprburst` | Opens the GPU-rendered launcher **window**. It owns its own Wayland surface, so it works from a graphical context with no controlling terminal — this is what the `Super+Space` Hyprland bind invokes. |
 | `hyprburst tui` | Runs the launcher **inline** in the current terminal (crossterm), with no window. The fallback for SSH / no-GPU sessions, and handy for testing the UI from a shell. |
+| `hyprburst rio` | Opens the experimental Rio-backed window. `rio-vt` manages a PTY running `hyprburst tui`; Hyprburst renders Rio's terminal grid through its existing OpenGL renderer. |
 | `hyprburst help` (`-h`, `--help`) | Prints the usage summary and exits. |
 | `hyprburst --measure` | Opens the window, prints cold-start latency + peak RSS at the first frame, then exits. |
+| `hyprburst rio --measure` | Measures the Rio prototype to its first PTY-backed frame. |
 | `hyprburst --bench-startup` | Times the cold startup path (config load + app init), prints peak RSS, and exits without opening the UI. See [Performance](#performance). |
 
 Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `Enter` to launch the selected app, `Escape` to close.
+
+The Rio frontend is an evaluation path, not the default. See [Rio Prototype Findings](docs/rio-prototype.md) for its architecture, measurements, limitations, and recommendation.
 
 When opening an app from its `.desktop` file, Hyprburst removes freedesktop launch target placeholders such as `%f`, `%F`, `%u`, and `%U`. That matches normal app-launcher behavior for launches without a selected file or URL, so apps such as Inkscape start normally instead of receiving a literal placeholder argument.
 
@@ -381,6 +385,8 @@ hyprburst peak RSS: ~5 MB
 Both well under the <50ms startup budget and minimal-memory goal.
 
 CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startup.rs` — generous headroom over the ~50ms local goal so shared CI runners don't flake. If the test ever does flake, it will be moved behind `#[ignore]` and run via `cargo test -- --ignored` as an opt-in lane.
+
+The Rio prototype has a separate first-presentation probe: `hyprburst rio --measure`. Its reference result and comparison with the native frontend are recorded in [Rio Prototype Findings](docs/rio-prototype.md).
 
 ## Troubleshooting
 

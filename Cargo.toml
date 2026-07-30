@@ -1,6 +1,6 @@
 [package]
 name = "hyprburst"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2024"
 description = "Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland"
 license = "GPL-3.0-or-later"
@@ -14,6 +14,7 @@ include = [
   "Cargo.toml",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",
+  "docs/**",
   "LICENSE",
   "MAINTAINERS.md",
   "README.md",
@@ -33,6 +34,9 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tachyonfx = "0.25"
+rio-vt = "0.5.1"
+teletypewriter = "0.5.1"
+corcovado = "0.5.1"
 
 # The windowed launcher owns its own Wayland surface and paints the ratatui
 # `Buffer` from `render_core` directly through a hand-written GL cell renderer —
