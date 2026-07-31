@@ -120,7 +120,7 @@ Hyprburst exposes a single binary with a tiny command surface. Run `hyprburst he
 | `hyprburst native --measure` | Measures the direct in-process fallback to its first frame. |
 | `hyprburst --bench-startup` | Times the cold startup path (config load + app init), prints peak RSS, and exits without opening the UI. See [Performance](#performance). |
 
-Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `Enter` to launch the selected app, `Escape` to close.
+Inside the launcher: type to filter, arrow keys (or PageUp/PageDown) to move, `Enter` to launch the selected app, click an app to launch it directly, or press `Escape` to close.
 
 See [Rio Prototype Findings](docs/rio-prototype.md) for the architecture, measurements, limitations, and promotion decision.
 

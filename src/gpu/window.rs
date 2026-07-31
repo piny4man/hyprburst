@@ -32,7 +32,7 @@ use glutin::surface::{Surface, SurfaceAttributesBuilder, WindowSurface};
 use glutin_winit::{DisplayBuilder, GlWindow};
 use raw_window_handle::HasWindowHandle;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::platform::wayland::WindowAttributesExtWayland;
@@ -45,8 +45,11 @@ use ratatui::style::{Color, Modifier};
 use crate::bench;
 use crate::domain::config::Config;
 use crate::domain::launcher_core::{LauncherAction, LauncherCore};
-use crate::gpu::grid::{Atlas, CellMetrics, GlyphKey, cell_rect, grid_size};
+use crate::gpu::grid::{
+    Atlas, CellMetrics, GlyphKey, GridSize, cell_at_pixel, cell_rect, grid_size,
+};
 use crate::gpu::rio::{KeyInput, Session};
+use crate::view::layout::entry_at;
 use crate::view::render::render_core;
 
 /// Atlas texture dimensions — ample for a launcher's character set.
@@ -149,6 +152,7 @@ struct App {
     /// window exists. A 1×1 placeholder until then.
     cell: CellMetrics,
     grid: (u16, u16),
+    cursor_position: Option<(f64, f64)>,
     /// Wayland app-id the windowrules match (`[window] app_id`).
     app_id: String,
     /// Initial window size in logical pixels (`[window] width/height`).
@@ -229,6 +233,7 @@ impl App {
             gl: None,
             cell: CellMetrics::new(1, 1),
             grid: (1, 1),
+            cursor_position: None,
         }
     }
 }
@@ -359,6 +364,46 @@ impl ApplicationHandler<()> for App {
                         }
                         Frontend::Rio { session: None, .. } => {}
                     }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = Some((position.x, position.y));
+            }
+            WindowEvent::CursorLeft { .. } => self.cursor_position = None,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(position) = self.cursor_position else {
+                    return;
+                };
+                let Some(cell) = cell_at_pixel(
+                    position,
+                    self.cell,
+                    GridSize {
+                        cols: self.grid.0,
+                        rows: self.grid.1,
+                    },
+                ) else {
+                    return;
+                };
+
+                match &mut self.frontend {
+                    Frontend::Launcher(core) => {
+                        let area = Rect::new(0, 0, self.grid.0, self.grid.1);
+                        let entry_count = core.view().entries.len();
+                        if let Some(index) = entry_at(area, core.config(), cell, entry_count) {
+                            core.apply(LauncherAction::SelectEntry(index));
+                            core.apply(LauncherAction::LaunchSelected);
+                            event_loop.exit();
+                        }
+                    }
+                    Frontend::Rio {
+                        session: Some(session),
+                        ..
+                    } => session.send_mouse_press(cell.0, cell.1),
+                    Frontend::Rio { session: None, .. } => {}
                 }
             }
             WindowEvent::RedrawRequested => {

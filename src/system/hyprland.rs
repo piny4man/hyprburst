@@ -244,12 +244,15 @@ pub fn special_toggle_args(syntax: DispatchSyntax, name: &str) -> Vec<String> {
 }
 
 /// Exec `command` via `hyprctl dispatch`, in whichever form the running Hyprland
-/// accepts. Best-effort: a spawn failure (no Hyprland) is ignored, matching the
-/// launcher's fire-and-forget launch.
+/// accepts. Wait for `hyprctl` to submit the dispatch before the launcher exits;
+/// otherwise Rio's PTY teardown can terminate the client before it reaches
+/// Hyprland. A client failure remains best-effort.
 pub fn dispatch_exec(command: &str) {
-    let _ = Command::new("hyprctl")
-        .args(exec_dispatch_args(dispatch_syntax(), command))
-        .spawn();
+    run_dispatch("hyprctl", &exec_dispatch_args(dispatch_syntax(), command));
+}
+
+fn run_dispatch(program: &str, args: &[String]) {
+    let _ = Command::new(program).args(args).status();
 }
 
 /// Toggle the special workspace `name` via `hyprctl dispatch`, in whichever form
@@ -344,6 +347,17 @@ mod tests {
         assert_eq!(
             special_toggle_args(DispatchSyntax::Lua, "hyprburst"),
             vec!["dispatch", "hl.dsp.workspace.toggle_special(\"hyprburst\")",],
+        );
+    }
+
+    #[test]
+    fn dispatch_waits_for_the_client_to_finish() {
+        let start = std::time::Instant::now();
+        run_dispatch("sh", &["-c".into(), "sleep 0.1".into()]);
+
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(80),
+            "dispatch returned before the client completed",
         );
     }
 

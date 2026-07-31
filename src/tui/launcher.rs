@@ -4,21 +4,24 @@
 //! crossterm `KeyCode`s to [`LauncherAction`]s and renders the core's view via the
 //! shared [`render_core`](crate::view::render::render_core).
 
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
 
 use crate::domain::config::Config;
 use crate::domain::launcher_core::{LauncherAction, LauncherCore};
+use crate::view::layout::entry_at;
 use crate::view::render::render_core;
 
 pub struct Launcher {
     core: LauncherCore,
+    last_area: Rect,
 }
 
 impl Launcher {
     pub fn new(config: Config) -> Self {
         Self {
             core: LauncherCore::new(config),
+            last_area: Rect::default(),
         }
     }
 
@@ -29,6 +32,23 @@ impl Launcher {
     pub fn handle_key(&mut self, code: KeyCode) {
         if let Some(action) = key_to_action(code) {
             self.core.apply(action);
+        }
+    }
+
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        if event.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+
+        let entry_count = self.core.view().entries.len();
+        if let Some(index) = entry_at(
+            self.last_area,
+            self.core.config(),
+            (event.column, event.row),
+            entry_count,
+        ) {
+            self.core.apply(LauncherAction::SelectEntry(index));
+            self.core.apply(LauncherAction::LaunchSelected);
         }
     }
 }
@@ -54,6 +74,7 @@ fn key_to_action(code: KeyCode) -> Option<LauncherAction> {
 
 impl Widget for &mut Launcher {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.last_area = area;
         render_core(&mut self.core, area, buf);
     }
 }

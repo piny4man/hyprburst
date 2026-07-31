@@ -1,6 +1,6 @@
 pkgbase = hyprburst
 	pkgdesc = Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland
-	pkgver = 0.6.0
+	pkgver = 0.6.1
 	pkgrel = 1
 	url = https://github.com/piny4man/hyprburst
 	arch = x86_64
@@ -12,7 +12,7 @@ pkgbase = hyprburst
 	optdepends = ttf-nerd-fonts-symbols: Nerd Font glyphs for entry icons (any Nerd Font works)
 	optdepends = foot: terminal emulator for the `hyprburst tui` fallback (any of alacritty/wezterm/ghostty/kitty/foot/rio works)
 	options = !lto
-	source = hyprburst-0.6.0.crate::https://static.crates.io/crates/hyprburst/hyprburst-0.6.0.crate
+	source = hyprburst-0.6.1.crate::https://static.crates.io/crates/hyprburst/hyprburst-0.6.1.crate
 	sha256sums = SKIP
 
 pkgname = hyprburst

@@ -64,8 +64,9 @@ portable benchmark.
   launcher state machine directly in the window process.
 - It forwards the text and navigation keys needed by the launcher, but does not
   yet implement a general terminal key encoder for modifiers or function keys.
-- Clipboard, selection, scrollback UI, mouse reporting, search, and Rio image
-  protocols are intentionally out of scope.
+- Clipboard, terminal text selection, scrollback UI, search, and Rio image
+  protocols are intentionally out of scope. Left-click reporting is implemented
+  for launching apps.
 - The renderer repaints the visible grid when Rio reports damage; it does not yet
   consume Rio's per-row dirty snapshot API.
 - Peak RSS from the existing probe is process-scoped and does not provide a
