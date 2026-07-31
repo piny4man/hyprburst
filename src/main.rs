@@ -107,8 +107,11 @@ fn run_tui() -> io::Result<()> {
                 app.apply_effects(frame, area);
             })
             .expect("terminal draw failed");
-        if let Some(code) = input::poll_key()? {
-            app.handle_key(code);
+        if let Some(input) = input::poll()? {
+            match input {
+                input::Input::Key(code) => app.handle_key(code),
+                input::Input::Mouse(event) => app.handle_mouse(event),
+            }
         }
     }
 

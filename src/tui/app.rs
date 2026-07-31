@@ -1,4 +1,4 @@
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, MouseEvent};
 use ratatui::prelude::*;
 
 use crate::domain::config::Config;
@@ -24,6 +24,11 @@ impl App {
 
     pub fn handle_key(&mut self, code: KeyCode) {
         self.launcher.handle_key(code);
+        self.running = self.launcher.running();
+    }
+
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        self.launcher.handle_mouse(event);
         self.running = self.launcher.running();
     }
 

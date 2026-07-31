@@ -30,6 +30,7 @@ pub enum LauncherAction {
     Backspace,
     Insert(char),
     Autocomplete,
+    SelectEntry(usize),
     LaunchSelected,
     Cancel,
 }
@@ -165,6 +166,11 @@ impl LauncherCore {
             LauncherAction::MoveDown => self.move_vertical(1),
             LauncherAction::MoveLeft => self.move_horizontal(-1),
             LauncherAction::MoveRight => self.move_horizontal(1),
+            LauncherAction::SelectEntry(index) => {
+                if index < self.filtered.len() {
+                    self.selected_index = index;
+                }
+            }
             LauncherAction::LaunchSelected => self.launch_selected(),
             LauncherAction::Backspace => {
                 self.query.pop();
@@ -403,6 +409,17 @@ mod tests {
         let mut core = core_with_apps();
         core.apply(LauncherAction::MoveDown);
         assert_eq!(core.selected_index, 1);
+    }
+
+    #[test]
+    fn select_entry_targets_a_visible_result() {
+        let mut core = core_with_apps();
+
+        core.apply(LauncherAction::SelectEntry(2));
+        assert_eq!(core.selected_index, 2);
+
+        core.apply(LauncherAction::SelectEntry(99));
+        assert_eq!(core.selected_index, 2, "invalid targets are ignored");
     }
 
     #[test]

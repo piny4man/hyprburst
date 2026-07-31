@@ -76,6 +76,39 @@ pub fn compute(area: Rect, config: &Config) -> LayoutRects {
     }
 }
 
+/// Resolve a rendered list cell to its row-major entry index.
+pub fn entry_at(
+    area: Rect,
+    config: &Config,
+    point: (u16, u16),
+    entry_count: usize,
+) -> Option<usize> {
+    let rects = compute(area, config);
+    let (x, y) = point;
+    if x < rects.list.x
+        || y < rects.list.y
+        || x >= rects.list.x.saturating_add(rects.list.width)
+        || y >= rects.list.y.saturating_add(rects.list.height)
+    {
+        return None;
+    }
+
+    let columns = rects.columns.max(1);
+    let column_width = rects.list.width / columns;
+    if column_width == 0 {
+        return None;
+    }
+
+    let relative_x = x - rects.list.x;
+    if relative_x >= column_width * columns {
+        return None;
+    }
+    let row = (y - rects.list.y) as usize;
+    let column = (relative_x / column_width) as usize;
+    let index = row * columns as usize + column;
+    (index < entry_count).then_some(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +159,31 @@ mod tests {
         assert_eq!(rects.list.y, 3);
         assert_eq!(rects.list.width, 72);
         assert_eq!(rects.list.height, 20 - 1);
+    }
+
+    #[test]
+    fn entry_hit_test_matches_rendered_grid_cells() {
+        let cfg = Config {
+            ui: UiConfig {
+                banner: String::new(),
+                ..UiConfig::default()
+            },
+            layout: LayoutConfig {
+                mode: LayoutMode::Grid,
+                padding_horizontal: 0,
+                padding_vertical: 0,
+                min_column_width: 10,
+                ..LayoutConfig::default()
+            },
+            ..Config::default()
+        };
+        let area = Rect::new(0, 0, 25, 4);
+
+        assert_eq!(entry_at(area, &cfg, (0, 1), 5), Some(0));
+        assert_eq!(entry_at(area, &cfg, (12, 1), 5), Some(1));
+        assert_eq!(entry_at(area, &cfg, (0, 2), 5), Some(2));
+        assert_eq!(entry_at(area, &cfg, (12, 3), 5), None);
+        assert_eq!(entry_at(area, &cfg, (24, 1), 5), None);
     }
 
     #[test]

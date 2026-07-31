@@ -147,6 +147,10 @@ fn cursor_sequence(final_byte: u8, app_cursor: bool) -> Vec<u8> {
     vec![0x1b, if app_cursor { b'O' } else { b'[' }, final_byte]
 }
 
+fn encode_mouse_press(col: u16, row: u16) -> Vec<u8> {
+    format!("\x1b[<0;{};{}M", col as u32 + 1, row as u32 + 1).into_bytes()
+}
+
 pub(crate) struct TerminalGlyph {
     pub col: u16,
     pub row: u16,
@@ -242,6 +246,16 @@ impl Session {
         let _ = self
             .channel
             .send(Msg::Input(Cow::Owned(encode_key(key, app_cursor))));
+    }
+
+    pub fn send_mouse_press(&self, col: u16, row: u16) {
+        let mode = self.terminal.lock().mode();
+        if !mode.intersects(Mode::MOUSE_MODE) || !mode.contains(Mode::SGR_MOUSE) {
+            return;
+        }
+        let _ = self
+            .channel
+            .send(Msg::Input(Cow::Owned(encode_mouse_press(col, row))));
     }
 
     pub fn resize(&self, grid: (u16, u16), pixels: (u32, u32), cell: (u32, u32)) {
@@ -516,5 +530,11 @@ mod tests {
         assert_eq!(encode_key(KeyInput::Up, false), b"\x1b[A");
         assert_eq!(encode_key(KeyInput::Up, true), b"\x1bOA");
         assert_eq!(encode_key(KeyInput::PageDown, false), b"\x1b[6~");
+    }
+
+    #[test]
+    fn mouse_press_uses_one_based_sgr_coordinates() {
+        assert_eq!(encode_mouse_press(0, 0), b"\x1b[<0;1;1M");
+        assert_eq!(encode_mouse_press(12, 4), b"\x1b[<0;13;5M");
     }
 }

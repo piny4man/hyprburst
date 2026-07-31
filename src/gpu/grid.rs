@@ -64,6 +64,26 @@ pub fn cell_rect(col: u16, row: u16, cell: CellMetrics) -> (u32, u32, u32, u32) 
     (x, y, cell.cell_w, cell.cell_h)
 }
 
+/// Map a physical window position to a whole terminal cell.
+pub fn cell_at_pixel(
+    position: (f64, f64),
+    cell: CellMetrics,
+    grid: GridSize,
+) -> Option<(u16, u16)> {
+    let (x, y) = position;
+    if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+        return None;
+    }
+
+    let col = (x / cell.cell_w as f64).floor();
+    let row = (y / cell.cell_h as f64).floor();
+    if col >= grid.cols as f64 || row >= grid.rows as f64 {
+        return None;
+    }
+
+    Some((col as u16, row as u16))
+}
+
 /// Identity of a rasterized glyph in the [`Atlas`]: the character plus the style
 /// bits that change its pixels. Bold is a different rasterization, so it keys
 /// separately; color does not (the shader tints a single white-on-clear glyph),
@@ -210,6 +230,16 @@ mod tests {
         let cell = CellMetrics::new(10, 20);
         assert_eq!(cell_rect(0, 0, cell), (0, 0, 10, 20));
         assert_eq!(cell_rect(3, 2, cell), (30, 40, 10, 20));
+    }
+
+    #[test]
+    fn pixel_position_maps_to_whole_cell() {
+        let cell = CellMetrics::new(10, 20);
+        let grid = GridSize { cols: 3, rows: 2 };
+
+        assert_eq!(cell_at_pixel((19.9, 20.0), cell, grid), Some((1, 1)));
+        assert_eq!(cell_at_pixel((30.0, 0.0), cell, grid), None);
+        assert_eq!(cell_at_pixel((-1.0, 0.0), cell, grid), None);
     }
 
     #[test]
