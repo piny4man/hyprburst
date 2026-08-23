@@ -13,11 +13,19 @@ pub fn search(query: &str, target: &str) -> Option<MatchResult> {
         });
     }
 
+    // Lowered once for standalone callers. The keystroke path goes through
+    // [`filter_and_rank`], which lowers the query once per call and matches
+    // against precomputed `name_lower`s via [`search_lower`] — no allocation
+    // per app.
     let query_lower = query.to_lowercase();
     let target_lower = target.to_lowercase();
+    search_lower(&query_lower, &target_lower)
+}
 
-    let prefix_score = prefix_match(&query_lower, &target_lower);
-    let fuzzy_score = fuzzy_match(&query_lower, &target_lower);
+/// Match an already-lowered query against an already-lowered target.
+fn search_lower(query_lower: &str, target_lower: &str) -> Option<MatchResult> {
+    let prefix_score = prefix_match(query_lower, target_lower);
+    let fuzzy_score = fuzzy_match(query_lower, target_lower);
 
     if prefix_score.is_some() || fuzzy_score.is_some() {
         let (score, is_prefix) = match (prefix_score, fuzzy_score) {
@@ -109,42 +117,51 @@ fn fuzzy_match(query: &str, target: &str) -> Option<u32> {
     }
 }
 
-pub fn filter_and_rank<'a>(
+/// Filter `apps` against `query` and rank the matches. Returns `(index, score)`
+/// pairs indexing back into `apps` — sorted best-first — so callers never have
+/// to recover positions (no pointer-identity rescans). Allocation per call: one
+/// lowercase of the query plus the results vector.
+pub fn filter_and_rank(
     query: &str,
-    apps: &'a [crate::domain::desktop::DesktopEntry],
+    apps: &[crate::domain::desktop::DesktopEntry],
     history_scores: &HashMap<String, f64>,
-) -> Vec<(&'a crate::domain::desktop::DesktopEntry, u32)> {
+) -> Vec<(usize, u32)> {
     if query.is_empty() {
         let mut results: Vec<_> = apps
             .iter()
-            .map(|app| {
+            .enumerate()
+            .map(|(idx, app)| {
                 let hs = history_scores.get(&app.id).copied().unwrap_or(0.0);
                 let score = (hs * 100.0).round().min(u32::MAX as f64) as u32;
-                (app, score)
+                (idx, score)
             })
             .collect();
         results.sort_by(|a, b| {
             b.1.cmp(&a.1)
-                .then_with(|| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()))
+                .then_with(|| apps[a.0].name_lower.cmp(&apps[b.0].name_lower))
         });
         return results;
     }
 
+    // Lowered once per keystroke, not once per app; targets are the entries'
+    // precomputed `name_lower` fields, so matching allocates nothing.
+    let query_lower = query.to_lowercase();
     let mut results: Vec<_> = apps
         .iter()
-        .filter_map(|app| {
-            search(query, &app.name).map(|m| {
+        .enumerate()
+        .filter_map(|(idx, app)| {
+            search_lower(&query_lower, &app.name_lower).map(|m| {
                 let base = if m.is_prefix { m.score + 200 } else { m.score };
                 let hs = history_scores.get(&app.id).copied().unwrap_or(0.0);
                 let boost = (hs * 10.0).round().min(u32::MAX as f64) as u32;
-                (app, base + boost)
+                (idx, base + boost)
             })
         })
         .collect();
 
     results.sort_by(|a, b| {
         b.1.cmp(&a.1)
-            .then_with(|| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()))
+            .then_with(|| apps[a.0].name_lower.cmp(&apps[b.0].name_lower))
     });
     results
 }
@@ -154,22 +171,13 @@ mod tests {
     use super::*;
     use crate::domain::desktop::DesktopEntry;
 
+    fn entry(id: &str, name: &str) -> DesktopEntry {
+        DesktopEntry::new(id, name, "", "")
+    }
+
     #[test]
     fn empty_query_returns_all() {
-        let apps = vec![
-            DesktopEntry {
-                id: "firefox".into(),
-                name: "Firefox".into(),
-                icon: "firefox".into(),
-                exec: "firefox".into(),
-            },
-            DesktopEntry {
-                id: "chrome".into(),
-                name: "Chrome".into(),
-                icon: "chrome".into(),
-                exec: "chrome".into(),
-            },
-        ];
+        let apps = vec![entry("firefox", "Firefox"), entry("chrome", "Chrome")];
         let results = filter_and_rank("", &apps, &HashMap::new());
         assert_eq!(results.len(), 2);
     }
@@ -177,58 +185,33 @@ mod tests {
     #[test]
     fn prefix_match_scores_higher() {
         let apps = vec![
-            DesktopEntry {
-                id: "firefox".into(),
-                name: "Firefox".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-            DesktopEntry {
-                id: "my-firefox".into(),
-                name: "My Firefox".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
+            entry("firefox", "Firefox"),
+            entry("my-firefox", "My Firefox"),
         ];
         let results = filter_and_rank("fire", &apps, &HashMap::new());
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0.name, "Firefox");
+        assert_eq!(apps[results[0].0].name, "Firefox");
         assert!(results[0].1 > results[1].1);
     }
 
     #[test]
     fn fuzzy_match_finds_partial() {
-        let apps = vec![DesktopEntry {
-            id: "vscode".into(),
-            name: "Visual Studio Code".into(),
-            icon: "".into(),
-            exec: "".into(),
-        }];
+        let apps = vec![entry("vscode", "Visual Studio Code")];
         let results = filter_and_rank("vsc", &apps, &HashMap::new());
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0.name, "Visual Studio Code");
+        assert_eq!(apps[results[0].0].name, "Visual Studio Code");
     }
 
     #[test]
     fn no_match_returns_empty() {
-        let apps = vec![DesktopEntry {
-            id: "firefox".into(),
-            name: "Firefox".into(),
-            icon: "".into(),
-            exec: "".into(),
-        }];
+        let apps = vec![entry("firefox", "Firefox")];
         let results = filter_and_rank("chrome", &apps, &HashMap::new());
         assert!(results.is_empty());
     }
 
     #[test]
     fn case_insensitive_matching() {
-        let apps = vec![DesktopEntry {
-            id: "firefox".into(),
-            name: "Firefox".into(),
-            icon: "".into(),
-            exec: "".into(),
-        }];
+        let apps = vec![entry("firefox", "Firefox")];
         let results = filter_and_rank("FIRE", &apps, &HashMap::new());
         assert_eq!(results.len(), 1);
     }
@@ -258,24 +241,9 @@ mod tests {
     #[test]
     fn results_ranked_by_score() {
         let apps = vec![
-            DesktopEntry {
-                id: "zebra".into(),
-                name: "Zebra".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-            DesktopEntry {
-                id: "apple".into(),
-                name: "Apple".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-            DesktopEntry {
-                id: "app-store".into(),
-                name: "App Store".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
+            entry("zebra", "Zebra"),
+            entry("apple", "Apple"),
+            entry("app-store", "App Store"),
         ];
         let results = filter_and_rank("app", &apps, &HashMap::new());
         assert_eq!(results.len(), 2);
@@ -290,12 +258,7 @@ mod tests {
     #[test]
     fn search_performance_under_50ms() {
         let apps: Vec<_> = (0..1000)
-            .map(|i| DesktopEntry {
-                id: format!("app-{}", i),
-                name: format!("Application {}", i),
-                icon: "".into(),
-                exec: "".into(),
-            })
+            .map(|i| DesktopEntry::new(format!("app-{}", i), format!("Application {}", i), "", ""))
             .collect();
 
         let start = std::time::Instant::now();
@@ -310,26 +273,27 @@ mod tests {
     }
 
     #[test]
+    fn results_index_back_into_apps() {
+        // filter_and_rank returns indices, not references — they must resolve
+        // to the right apps.
+        let apps = vec![entry("b", "Bravo"), entry("a", "Alpha")];
+        let results = filter_and_rank("", &apps, &HashMap::new());
+        assert_eq!(results.len(), 2);
+        for &(idx, _) in &results {
+            assert!(idx < apps.len());
+        }
+        assert_eq!(
+            apps[results[0].0].name_lower, "alpha",
+            "alphabetical tie-break with no history"
+        );
+    }
+
+    #[test]
     fn empty_query_ranks_by_history() {
         let apps = vec![
-            DesktopEntry {
-                id: "a".into(),
-                name: "Alpha".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-            DesktopEntry {
-                id: "b".into(),
-                name: "Bravo".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-            DesktopEntry {
-                id: "c".into(),
-                name: "Charlie".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
+            entry("a", "Alpha"),
+            entry("b", "Bravo"),
+            entry("c", "Charlie"),
         ];
         let mut scores = HashMap::new();
         scores.insert("b".to_string(), 10.0);
@@ -337,50 +301,27 @@ mod tests {
 
         let results = filter_and_rank("", &apps, &scores);
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].0.id, "b");
-        assert_eq!(results[1].0.id, "a");
-        assert_eq!(results[2].0.id, "c");
+        assert_eq!(apps[results[0].0].id, "b");
+        assert_eq!(apps[results[1].0].id, "a");
+        assert_eq!(apps[results[2].0].id, "c");
     }
 
     #[test]
     fn empty_query_empty_history_sorts_alphabetically() {
-        let apps = vec![
-            DesktopEntry {
-                id: "z".into(),
-                name: "Zebra".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-            DesktopEntry {
-                id: "a".into(),
-                name: "Apple".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-        ];
+        let apps = vec![entry("z", "Zebra"), entry("a", "Apple")];
         let results = filter_and_rank("", &apps, &HashMap::new());
-        assert_eq!(results[0].0.name, "Apple");
-        assert_eq!(results[1].0.name, "Zebra");
+        assert_eq!(apps[results[0].0].name, "Apple");
+        assert_eq!(apps[results[1].0].name, "Zebra");
     }
 
     #[test]
     fn history_boosts_matching_apps() {
         let apps = vec![
-            DesktopEntry {
-                id: "fire-a".into(),
-                name: "Firefox".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
-            DesktopEntry {
-                id: "fire-b".into(),
-                name: "Firefox Developer".into(),
-                icon: "".into(),
-                exec: "".into(),
-            },
+            entry("fire-a", "Firefox"),
+            entry("fire-b", "Firefox Developer"),
         ];
         let no_history = filter_and_rank("fire", &apps, &HashMap::new());
-        let top_no_hist = no_history[0].0.id.clone();
+        let top_no_hist = apps[no_history[0].0].id.clone();
 
         let mut scores = HashMap::new();
         let other = if top_no_hist == "fire-a" {
@@ -391,17 +332,12 @@ mod tests {
         scores.insert(other.to_string(), 50.0);
 
         let with_history = filter_and_rank("fire", &apps, &scores);
-        assert_eq!(with_history[0].0.id, other);
+        assert_eq!(apps[with_history[0].0].id, other);
     }
 
     #[test]
     fn history_does_not_resurrect_non_matches() {
-        let apps = vec![DesktopEntry {
-            id: "firefox".into(),
-            name: "Firefox".into(),
-            icon: "".into(),
-            exec: "".into(),
-        }];
+        let apps = vec![entry("firefox", "Firefox")];
         let mut scores = HashMap::new();
         scores.insert("firefox".to_string(), 1000.0);
 

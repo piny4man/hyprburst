@@ -1,112 +1,10 @@
-use std::path::{Path, PathBuf};
-
-const ICON_EXTENSIONS: &[&str] = &["png", "svg", "xpm"];
-
-/// Raster formats Skia's `from_encoded` can decode. The Freya GUI themed-icon
-/// path uses only these, so SVG/XPM-only entries resolve to `None` and fall back
-/// to a glyph rather than handing Skia bytes it can't decode.
-#[allow(dead_code)]
-pub const RASTER_ICON_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
-
-#[allow(dead_code)]
-pub fn resolve_icon(name: &str) -> Option<PathBuf> {
-    resolve_icon_in(name, &icon_search_paths())
-}
-
-/// Resolve `name` to a raster icon file (see [`RASTER_ICON_EXTENSIONS`]) the GUI
-/// can decode, searching the system theme paths. Used by the Freya themed-icon
-/// path; returns `None` when only vector/unsupported formats exist.
-#[allow(dead_code)]
-pub fn resolve_raster_icon(name: &str) -> Option<PathBuf> {
-    resolve_icon_in_ext(name, &icon_search_paths(), RASTER_ICON_EXTENSIONS)
-}
-
-#[allow(dead_code)]
-pub(crate) fn icon_search_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        paths.push(PathBuf::from(&home).join(".icons"));
-        if std::env::var("XDG_DATA_HOME").is_err() {
-            paths.push(PathBuf::from(&home).join(".local/share/icons"));
-        }
-    }
-    if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
-        paths.push(PathBuf::from(data_home).join("icons"));
-    }
-    if let Ok(data_dirs) = std::env::var("XDG_DATA_DIRS") {
-        for dir in data_dirs.split(':').filter(|d| !d.is_empty()) {
-            paths.push(PathBuf::from(dir).join("icons"));
-        }
-    } else {
-        paths.push(PathBuf::from("/usr/local/share/icons"));
-        paths.push(PathBuf::from("/usr/share/icons"));
-    }
-    paths.push(PathBuf::from("/usr/share/pixmaps"));
-    paths
-}
-
-#[allow(dead_code)]
-pub(crate) fn resolve_icon_in(name: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
-    resolve_icon_in_ext(name, search_paths, ICON_EXTENSIONS)
-}
-
-/// [`resolve_icon_in`] parameterized by the accepted file extensions, so the GUI
-/// can restrict resolution to raster formats while the default path keeps the
-/// full `png`/`svg`/`xpm` set.
-#[allow(dead_code)]
-fn resolve_icon_in_ext(name: &str, search_paths: &[PathBuf], exts: &[&str]) -> Option<PathBuf> {
-    if name.is_empty() {
-        return None;
-    }
-
-    let as_path = Path::new(name);
-    if as_path.is_absolute() && as_path.is_file() {
-        return Some(as_path.to_path_buf());
-    }
-
-    for base in search_paths {
-        for ext in exts {
-            let candidate = base.join(format!("{}.{}", name, ext));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-        if let Some(found) = find_icon_recursive(base, name, 4, exts) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn find_icon_recursive(dir: &Path, name: &str, depth: usize, exts: &[&str]) -> Option<PathBuf> {
-    if depth == 0 || !dir.is_dir() {
-        return None;
-    }
-
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut subdirs = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            subdirs.push(path);
-            continue;
-        }
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-            && stem == name
-            && let Some(ext) = path.extension().and_then(|s| s.to_str())
-            && exts.contains(&ext)
-        {
-            return Some(path);
-        }
-    }
-    for sub in subdirs {
-        if let Some(found) = find_icon_recursive(&sub, name, depth - 1, exts) {
-            return Some(found);
-        }
-    }
-    None
-}
+//! Nerd Font fallback glyphs for desktop entries.
+//!
+//! The shipped frontends render icons as text glyphs from the launcher's
+//! monospace font, so an entry's icon/name only needs to map to the closest
+//! [`fallback_glyph`]. (A future image-icon frontend would re-introduce themed
+//! file resolution — with sanitization: the previous resolver accepted absolute
+//! paths and unsanitized `..` joins from user-writable `.desktop` files.)
 
 const GENERIC_GLYPH: &str = "\u{f1b2}"; // nf-fa-cube
 
@@ -251,77 +149,6 @@ pub fn fallback_glyph(icon_name: &str, app_name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-
-    fn make_icon_dir() -> tempdir_like::Dir {
-        tempdir_like::Dir::new("hyprburst-icon-tests")
-    }
-
-    #[test]
-    fn resolve_returns_none_for_empty_name() {
-        assert!(resolve_icon_in("", &[]).is_none());
-    }
-
-    #[test]
-    fn resolve_returns_none_for_missing_icon() {
-        let dir = make_icon_dir();
-        assert!(resolve_icon_in("nope", &[dir.path().to_path_buf()]).is_none());
-    }
-
-    #[test]
-    fn resolve_absolute_path_when_file_exists() {
-        let dir = make_icon_dir();
-        let file = dir.path().join("abs.png");
-        fs::write(&file, b"x").unwrap();
-        let got = resolve_icon_in(file.to_str().unwrap(), &[]).unwrap();
-        assert_eq!(got, file);
-    }
-
-    #[test]
-    fn resolve_absolute_path_none_when_missing() {
-        let dir = make_icon_dir();
-        let file = dir.path().join("missing.png");
-        assert!(resolve_icon_in(file.to_str().unwrap(), &[]).is_none());
-    }
-
-    #[test]
-    fn resolve_finds_icon_direct_in_search_path() {
-        let dir = make_icon_dir();
-        let file = dir.path().join("firefox.png");
-        fs::write(&file, b"x").unwrap();
-        let got = resolve_icon_in("firefox", &[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(got, file);
-    }
-
-    #[test]
-    fn resolve_finds_icon_in_nested_theme_dir() {
-        let dir = make_icon_dir();
-        let nested = dir.path().join("hicolor").join("48x48").join("apps");
-        fs::create_dir_all(&nested).unwrap();
-        let file = nested.join("firefox.svg");
-        fs::write(&file, b"x").unwrap();
-        let got = resolve_icon_in("firefox", &[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(got, file);
-    }
-
-    #[test]
-    fn resolve_prefers_direct_match_over_nested() {
-        let dir = make_icon_dir();
-        let nested = dir.path().join("hicolor").join("48x48").join("apps");
-        fs::create_dir_all(&nested).unwrap();
-        fs::write(nested.join("firefox.png"), b"nested").unwrap();
-        let direct = dir.path().join("firefox.png");
-        fs::write(&direct, b"direct").unwrap();
-        let got = resolve_icon_in("firefox", &[dir.path().to_path_buf()]).unwrap();
-        assert_eq!(got, direct);
-    }
-
-    #[test]
-    fn resolve_ignores_unsupported_extensions() {
-        let dir = make_icon_dir();
-        fs::write(dir.path().join("firefox.bmp"), b"x").unwrap();
-        assert!(resolve_icon_in("firefox", &[dir.path().to_path_buf()]).is_none());
-    }
 
     #[test]
     fn fallback_glyph_matches_known_icon_name() {
@@ -373,37 +200,6 @@ mod tests {
         }
         for ch in GENERIC_GLYPH.chars() {
             assert!((0xE000..=0xF8FF).contains(&(ch as u32)));
-        }
-    }
-
-    mod tempdir_like {
-        use std::path::{Path, PathBuf};
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-        pub struct Dir {
-            path: PathBuf,
-        }
-
-        impl Dir {
-            pub fn new(prefix: &str) -> Self {
-                let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-                let pid = std::process::id();
-                let path = std::env::temp_dir().join(format!("{}-{}-{}", prefix, pid, n));
-                std::fs::create_dir_all(&path).unwrap();
-                Self { path }
-            }
-
-            pub fn path(&self) -> &Path {
-                &self.path
-            }
-        }
-
-        impl Drop for Dir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.path);
-            }
         }
     }
 }

@@ -32,6 +32,13 @@ impl App {
         self.running = self.launcher.running();
     }
 
+    /// Whether the fade-in effect still needs repaints. While it runs the
+    /// terminal redraws even without input; once done, an idle terminal waits
+    /// in `input::poll_batch` instead of repainting at ~60 fps.
+    pub fn effects_running(&self) -> bool {
+        !self.fade_in.is_done()
+    }
+
     pub fn apply_effects(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if !self.fade_in.is_done() {
             self.fade_in.apply(frame, area);

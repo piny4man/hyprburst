@@ -10,10 +10,11 @@ use ratatui::prelude::*;
 use crate::domain::config::Config;
 use crate::domain::launcher_core::{LauncherAction, LauncherCore};
 use crate::view::layout::entry_at;
-use crate::view::render::render_core;
+use crate::view::render::{RenderCache, render_core};
 
 pub struct Launcher {
     core: LauncherCore,
+    cache: RenderCache,
     last_area: Rect,
 }
 
@@ -21,6 +22,7 @@ impl Launcher {
     pub fn new(config: Config) -> Self {
         Self {
             core: LauncherCore::new(config),
+            cache: RenderCache::new(),
             last_area: Rect::default(),
         }
     }
@@ -75,7 +77,7 @@ fn key_to_action(code: KeyCode) -> Option<LauncherAction> {
 impl Widget for &mut Launcher {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.last_area = area;
-        render_core(&mut self.core, area, buf);
+        render_core(&mut self.cache, &mut self.core, area, buf);
     }
 }
 

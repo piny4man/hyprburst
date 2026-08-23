@@ -7,14 +7,19 @@
 //!
 //! 1. an explicit path from `[font] path` in the config,
 //! 2. the `HYPRBURST_FONT` environment variable (a `.ttf`/`.otf` path),
-//! 3. a **Nerd Font** discovered via fontconfig — the default monospace if it is
-//!    already a Nerd Font, otherwise any installed Nerd Font (a `Mono` variant
-//!    preferred), so icons render instead of tofu out of the box,
-//! 4. the system's default monospace via `fc-match` (may lack icon glyphs),
-//! 5. a few common hard-coded paths, as a last resort.
+//! 3. fontconfig candidates: the default monospace if it is already a Nerd Font,
+//!    otherwise any installed Nerd Font (a `Mono` variant preferred), then the
+//!    plain default monospace (may lack icon glyphs),
+//! 4. a few common hard-coded paths, as a last resort.
+//!
+//! Cold-start matters here: the common case (a Nerd Font as the default
+//! monospace) costs exactly one `fc-match` spawn; the scan-for-any-Nerd-Font
+//! path adds one `fc-list`.
 
 use std::path::PathBuf;
 use std::process::Command;
+
+use ab_glyph::FontVec;
 
 /// The environment variable that pins the cell font, overriding `fc-match`.
 const FONT_ENV: &str = "HYPRBURST_FONT";
@@ -28,12 +33,14 @@ const FALLBACK_PATHS: &[&str] = &[
     "/usr/share/fonts/TTF/Hack-Regular.ttf",
 ];
 
-/// Read the bytes of a usable monospace font, or `None` if nothing resolved.
-/// `config_path` is the optional `[font] path` from the config — tried first.
-pub fn resolve_font_bytes(config_path: Option<&str>) -> Option<Vec<u8>> {
-    candidate_paths(config_path)
-        .into_iter()
-        .find_map(|p| std::fs::read(&p).ok())
+/// Load the first *parseable* monospace font from the candidate list, or `None`
+/// if nothing resolved. Validation happens here so a readable-but-corrupt file
+/// falls through to the next candidate instead of aborting resolution upstream.
+pub fn resolve_font(config_path: Option<&str>) -> Option<FontVec> {
+    candidate_paths(config_path).into_iter().find_map(|p| {
+        let bytes = std::fs::read(&p).ok()?;
+        FontVec::try_from_vec(bytes).ok()
+    })
 }
 
 /// The ordered list of font paths to try, most-specific first.
@@ -47,42 +54,50 @@ fn candidate_paths(config_path: Option<&str>) -> Vec<PathBuf> {
     {
         paths.push(PathBuf::from(p));
     }
-    // Prefer a Nerd Font so the launcher's icon glyphs render; fall back to the
-    // plain default monospace (icons may show as tofu — set `[font] path`).
-    if let Some(p) = fc_nerd_font() {
-        paths.push(p);
-    }
-    if let Some(p) = fc_match("monospace") {
-        paths.push(p);
-    }
+    paths.extend(fc_font_candidates());
     paths.extend(FALLBACK_PATHS.iter().map(PathBuf::from));
     paths
 }
 
-/// Resolve a fontconfig pattern to a concrete font file via `fc-match`. `None`
-/// if `fc-match` is missing or returns nothing.
-fn fc_match(pattern: &str) -> Option<PathBuf> {
-    let path = fc_match_field(pattern, "%{file}")?;
-    if path.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(path))
+/// fontconfig-derived candidates. ONE `fc-match monospace` spawn answers both
+/// "which file?" and "is it already a Nerd Font?" via a combined format string;
+/// only when it isn't do we spend a second spawn on an `fc-list` scan.
+fn fc_font_candidates() -> Vec<PathBuf> {
+    let Some((default_file, family)) = fc_default_mono() else {
+        return Vec::new();
+    };
+    if family_is_nerd(&family) {
+        return vec![default_file];
     }
+    let mut candidates = vec![default_file];
+    if let Some(nerd) = fc_any_nerd_font() {
+        // A dedicated Nerd Font beats the plain default mono (icons vs tofu).
+        candidates.insert(0, nerd);
+    }
+    candidates
 }
 
-/// Find an installed Nerd Font that carries both text and icon glyphs: the
-/// default monospace if it already is one, otherwise any Nerd Font from
-/// `fc-list` (a `Mono` variant preferred).
-fn fc_nerd_font() -> Option<PathBuf> {
-    // 1. The default monospace is already a Nerd Font — keep it.
-    if let Some(family) = fc_match_field("monospace", "%{family}")
-        && family_is_nerd(&family)
-        && let Some(file) = fc_match_field("monospace", "%{file}")
-        && !file.is_empty()
-    {
-        return Some(PathBuf::from(file));
+/// `(file, family)` of the system default monospace, from a single
+/// `fc-match -f '%{file}\t%{family}' monospace` invocation.
+fn fc_default_mono() -> Option<(PathBuf, String)> {
+    let out = Command::new("fc-match")
+        .args(["-f", "%{file}\t%{family}", "monospace"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
     }
-    // 2. Otherwise scan all installed fonts for a Nerd Font.
+    let text = String::from_utf8(out.stdout).ok()?;
+    let (file, family) = text.trim().split_once('\t')?;
+    let file = file.trim();
+    if file.is_empty() {
+        return None;
+    }
+    Some((PathBuf::from(file), family.to_string()))
+}
+
+/// Scan all installed fonts for a Nerd Font (`fc-list`), Mono variants preferred.
+fn fc_any_nerd_font() -> Option<PathBuf> {
     let out = Command::new("fc-list")
         .arg("-f")
         .arg("%{family}\t%{file}\n")
@@ -93,20 +108,6 @@ fn fc_nerd_font() -> Option<PathBuf> {
     }
     let list = String::from_utf8(out.stdout).ok()?;
     pick_nerd_font(&list).map(PathBuf::from)
-}
-
-/// Run `fc-match -f <format> <pattern>` and return its trimmed stdout.
-fn fc_match_field(pattern: &str, format: &str) -> Option<String> {
-    let out = Command::new("fc-match")
-        .arg("-f")
-        .arg(format)
-        .arg(pattern)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8(out.stdout).ok()?.trim().to_string())
 }
 
 /// Does a fontconfig family string name a Nerd Font?

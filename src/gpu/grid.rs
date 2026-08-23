@@ -43,16 +43,43 @@ pub struct GridSize {
     pub rows: u16,
 }
 
+/// A cell with a non-default background — a solid quad drawn behind the glyphs
+/// (e.g. the selection highlight bar, which spans the row including its spaces).
+/// Shared by the launcher buffer scan (`window`) and the Rio VT snapshot
+/// (`rio`), which both feed the same GL renderer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BgCell {
+    pub col: u16,
+    pub row: u16,
+    pub color: [f32; 4],
+}
+
+/// One non-blank glyph cell to draw, resolved from either the rendered launcher
+/// buffer or the Rio terminal grid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellInstance {
+    pub col: u16,
+    pub row: u16,
+    pub ch: char,
+    pub bold: bool,
+    pub color: [f32; 3],
+}
+
 /// Map a window's pixel size to a grid: as many whole cells as fit, at least 1×1.
-/// The remainder pixels are left as padding the renderer can letterbox.
+/// The remainder pixels are left as padding the renderer can letterbox. The
+/// *total* cell count is capped at `u16::MAX`: the renderer iterates cells
+/// linearly in u16 (`build_cells`'s `index as u16`), so `cols × rows` must fit
+/// even though each axis alone could clamp to `u16::MAX`.
 pub fn grid_size(window_px: (u32, u32), cell: CellMetrics) -> GridSize {
     let cols = (window_px.0 / cell.cell_w).max(1);
     let rows = (window_px.1 / cell.cell_h).max(1);
+    // Grids beyond u16 are absurd for a launcher window; clamp rather than
+    // wrap so a freak window size can't produce a tiny grid via truncation.
+    let cols = cols.min(u16::MAX as u32);
+    let rows = rows.min(u16::MAX as u32).min(u16::MAX as u32 / cols);
     GridSize {
-        // Grids beyond u16 are absurd for a launcher window; clamp rather than
-        // wrap so a freak window size can't produce a tiny grid via truncation.
-        cols: cols.min(u16::MAX as u32) as u16,
-        rows: rows.min(u16::MAX as u32) as u16,
+        cols: cols as u16,
+        rows: rows as u16,
     }
 }
 
@@ -84,19 +111,19 @@ pub fn cell_at_pixel(
     Some((col as u16, row as u16))
 }
 
-/// Identity of a rasterized glyph in the [`Atlas`]: the character plus the style
-/// bits that change its pixels. Bold is a different rasterization, so it keys
-/// separately; color does not (the shader tints a single white-on-clear glyph),
-/// so it is deliberately absent.
+/// Identity of a rasterized glyph in the [`Atlas`]. Color does not key the slot
+/// (the shader tints a single white-on-clear glyph), and neither does weight:
+/// the rasterizer draws one regular-weight bitmap per character, so keying bold
+/// separately would just burn a second atlas slot for an identical tile. If
+/// true bold rasterization lands later, add the flag back here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
     pub ch: char,
-    pub bold: bool,
 }
 
 impl GlyphKey {
-    pub fn new(ch: char, bold: bool) -> Self {
-        Self { ch, bold }
+    pub fn new(ch: char) -> Self {
+        Self { ch }
     }
 }
 
@@ -214,6 +241,34 @@ mod tests {
     }
 
     #[test]
+    fn grid_size_caps_total_cells_within_u16() {
+        // A 1px cell on an enormous window: each axis would clamp to u16::MAX,
+        // but the product must also fit u16 so linear index math can't wrap.
+        let grid = grid_size((u32::MAX, u32::MAX), CellMetrics::new(1, 1));
+        assert_eq!(grid.cols, u16::MAX);
+        assert!(grid.cols as u32 * grid.rows as u32 <= u16::MAX as u32);
+        assert_eq!(grid.cols as u32 * grid.rows as u32, u16::MAX as u32);
+    }
+
+    #[test]
+    fn grid_size_shrinks_rows_when_product_would_overflow_u16() {
+        // 1000×1000 cells exceeds u16; rows shrink to keep the total bounded.
+        let grid = grid_size((2000, 2000), CellMetrics::new(2, 2));
+        assert_eq!(grid.cols, 1000);
+        assert_eq!(u32::from(grid.rows), u16::MAX as u32 / 1000);
+        assert!(grid.cols as u32 * grid.rows as u32 <= u16::MAX as u32);
+    }
+
+    #[test]
+    fn grid_size_clamp_never_yields_zero_cells() {
+        let cell = CellMetrics::new(1, 1);
+        for (w, h) in [(u32::MAX, 1), (1, u32::MAX)] {
+            let grid = grid_size((w, h), cell);
+            assert!(grid.cols >= 1 && grid.rows >= 1);
+        }
+    }
+
+    #[test]
     fn cell_metrics_never_zero() {
         let cell = CellMetrics::new(0, 0);
         assert_eq!(
@@ -245,24 +300,27 @@ mod tests {
     #[test]
     fn atlas_assigns_a_stable_slot_per_glyph() {
         let mut atlas = Atlas::new((64, 64), CellMetrics::new(16, 16));
-        let a1 = atlas.get_or_insert(GlyphKey::new('a', false)).unwrap();
+        let a1 = atlas.get_or_insert(GlyphKey::new('a')).unwrap();
         assert!(a1.newly_inserted, "first sight allocates");
-        let a2 = atlas.get_or_insert(GlyphKey::new('a', false)).unwrap();
+        let a2 = atlas.get_or_insert(GlyphKey::new('a')).unwrap();
         assert!(!a2.newly_inserted, "second sight reuses");
         assert_eq!(a1.index, a2.index, "same glyph keeps its slot");
         assert_eq!(atlas.len(), 1);
     }
 
     #[test]
-    fn atlas_keys_bold_separately_from_regular() {
+    fn atlas_keys_bold_and_regular_to_one_slot() {
+        // Weight is not part of the key: the rasterizer draws one bitmap per
+        // character, so a bold cell reuses the regular tile instead of doubling
+        // atlas consumption.
         let mut atlas = Atlas::new((64, 64), CellMetrics::new(16, 16));
-        let regular = atlas.get_or_insert(GlyphKey::new('x', false)).unwrap();
-        let bold = atlas.get_or_insert(GlyphKey::new('x', true)).unwrap();
-        assert_ne!(
+        let regular = atlas.get_or_insert(GlyphKey::new('x')).unwrap();
+        let bold = atlas.get_or_insert(GlyphKey::new('x')).unwrap();
+        assert_eq!(
             regular.index, bold.index,
-            "bold is a distinct rasterization"
+            "bold and regular share the character's slot"
         );
-        assert_eq!(atlas.len(), 2);
+        assert_eq!(atlas.len(), 1);
     }
 
     #[test]
@@ -271,7 +329,7 @@ mod tests {
         let mut atlas = Atlas::new((64, 64), CellMetrics::new(16, 16));
         let slots: Vec<_> = "abcde"
             .chars()
-            .map(|c| atlas.get_or_insert(GlyphKey::new(c, false)).unwrap())
+            .map(|c| atlas.get_or_insert(GlyphKey::new(c)).unwrap())
             .collect();
         assert_eq!(slots[0].px, (0, 0));
         assert_eq!(slots[3].px, (48, 0));
@@ -287,20 +345,20 @@ mod tests {
         // A 2×1-slot atlas holds exactly two distinct glyphs.
         let mut atlas = Atlas::new((32, 16), CellMetrics::new(16, 16));
         assert_eq!(atlas.capacity(), 2);
-        assert!(atlas.get_or_insert(GlyphKey::new('a', false)).is_some());
-        assert!(atlas.get_or_insert(GlyphKey::new('b', false)).is_some());
+        assert!(atlas.get_or_insert(GlyphKey::new('a')).is_some());
+        assert!(atlas.get_or_insert(GlyphKey::new('b')).is_some());
         assert!(
-            atlas.get_or_insert(GlyphKey::new('c', false)).is_none(),
+            atlas.get_or_insert(GlyphKey::new('c')).is_none(),
             "a third distinct glyph overflows the full atlas",
         );
         // A glyph already resident still resolves even when the atlas is full.
-        assert!(atlas.get_or_insert(GlyphKey::new('a', false)).is_some());
+        assert!(atlas.get_or_insert(GlyphKey::new('a')).is_some());
     }
 
     #[test]
     fn atlas_uv_rect_is_normalized_within_unit_square() {
         let mut atlas = Atlas::new((64, 64), CellMetrics::new(16, 16));
-        let slot = atlas.get_or_insert(GlyphKey::new('a', false)).unwrap();
+        let slot = atlas.get_or_insert(GlyphKey::new('a')).unwrap();
         let (u0, v0, u1, v1) = atlas.uv_rect(slot);
         assert_eq!((u0, v0), (0.0, 0.0));
         assert_eq!((u1, v1), (0.25, 0.25), "16/64 = one quarter of the atlas");
