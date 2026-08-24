@@ -1,14 +1,46 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::domain::icon::fallback_glyph;
+
 pub struct DesktopEntry {
     pub id: String,
     pub name: String,
+    /// Lowercased [`Self::name`], precomputed once at discovery so the search
+    /// match and sort tie-break never allocate per comparison or per keystroke.
+    pub(crate) name_lower: String,
     pub icon: String,
     pub exec: String,
+    /// Nerd Font fallback glyph for this entry (see
+    /// [`fallback_glyph`](crate::domain::icon::fallback_glyph)), resolved once
+    /// at discovery instead of per visible cell per frame.
+    pub(crate) glyph: &'static str,
 }
 
 impl DesktopEntry {
+    /// Build an entry, deriving the lowercase search name and fallback glyph
+    /// from the immutable fields. The single derivation point shared by
+    /// discovery and tests.
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        icon: impl Into<String>,
+        exec: impl Into<String>,
+    ) -> Self {
+        let name = name.into();
+        let name_lower = name.to_lowercase();
+        let icon = icon.into();
+        let glyph = fallback_glyph(&icon, &name);
+        Self {
+            id: id.into(),
+            name,
+            name_lower,
+            icon,
+            exec: exec.into(),
+            glyph,
+        }
+    }
+
     fn parse(content: &str) -> Option<Self> {
         let mut name = None;
         let mut icon = None;
@@ -56,12 +88,7 @@ impl DesktopEntry {
             .map(|exec| expand_exec_field_codes(&exec, &name, &icon))
             .unwrap_or_default();
 
-        Some(DesktopEntry {
-            id: String::new(),
-            name,
-            icon,
-            exec,
-        })
+        Some(Self::new(String::new(), name, icon, exec))
     }
 }
 
@@ -190,44 +217,146 @@ fn push_spaced(out: &mut String, value: &str) {
 }
 
 pub fn discover_apps() -> Vec<DesktopEntry> {
-    let mut apps = Vec::new();
+    discover_in(&data_dirs())
+}
+
+/// Data roots per the XDG basedir spec, in precedence order: `$XDG_DATA_HOME`
+/// (default `~/.local/share`) first so user entries shadow system ones, then
+/// each colon-separated entry of `$XDG_DATA_DIRS` (default
+/// `/usr/local/share:/usr/share`). Honoring `XDG_DATA_DIRS` is also what makes
+/// Flatpak-style export dirs (`…/exports/share`) visible.
+fn data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-
-    if let Ok(path) = std::env::var("XDG_DATA_HOME") {
-        dirs.push(PathBuf::from(path).join("applications"));
+    if let Ok(path) = std::env::var("XDG_DATA_HOME")
+        && !path.is_empty()
+    {
+        dirs.push(PathBuf::from(path));
     } else if let Ok(home) = std::env::var("HOME") {
-        dirs.push(PathBuf::from(home).join(".local/share/applications"));
+        dirs.push(PathBuf::from(home).join(".local/share"));
     }
+    let data_dirs = match std::env::var("XDG_DATA_DIRS") {
+        Ok(v) if !v.is_empty() => v,
+        _ => "/usr/local/share:/usr/share".to_string(),
+    };
+    dirs.extend(
+        data_dirs
+            .split(':')
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from),
+    );
+    dirs
+}
 
-    dirs.push(PathBuf::from("/usr/share/applications"));
+/// Discover `.desktop` applications under each data root's `applications/`
+/// subdir. The *first* file for a given desktop-id wins — per the spec a
+/// higher-precedence copy shadows later ones, and that holds even when the
+/// shadowing file is `Hidden`/`NoDisplay` (a user can hide a system app by
+/// overriding it) or fails to parse.
+fn discover_in(data_roots: &[PathBuf]) -> Vec<DesktopEntry> {
+    let mut apps = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for dir in dirs {
-        if dir.is_dir()
-            && let Ok(entries) = fs::read_dir(&dir)
-        {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "desktop")
-                    && let Ok(content) = fs::read_to_string(&path)
-                    && let Some(mut app) = DesktopEntry::parse(&content)
-                {
-                    app.id = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    apps.push(app);
-                }
+    for root in data_roots {
+        let dir = root.join("applications");
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext == "desktop") {
+                continue;
+            }
+            let id = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Ok(content) = fs::read_to_string(&path)
+                && let Some(mut app) = DesktopEntry::parse(&content)
+            {
+                app.id = id;
+                apps.push(app);
             }
         }
     }
 
-    apps.sort_by_key(|a| a.name.to_lowercase());
+    apps.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
     apps
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::domain::testutil::Dir as TempDir;
+    use std::path::Path;
+
+    /// Write a minimal `.desktop` entry under `<root>/applications/`.
+    fn write_entry(root: &Path, file_name: &str, name: &str) {
+        let dir = root.join("applications");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(file_name),
+            format!("[Desktop Entry]\nName={name}\nExec=app-{name}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn discovery_prefers_first_root_and_dedups_by_id() {
+        let user = TempDir::new("hyprburst-disc-user");
+        let system = TempDir::new("hyprburst-disc-sys");
+        write_entry(user.path(), "firefox.desktop", "Firefox User");
+        write_entry(system.path(), "firefox.desktop", "Firefox System");
+        write_entry(system.path(), "only-system.desktop", "System Only");
+
+        let apps = discover_in(&[user.path().to_path_buf(), system.path().to_path_buf()]);
+
+        assert_eq!(apps.len(), 2, "the shadowed firefox.desktop is skipped");
+        assert_eq!(apps[0].id, "firefox");
+        assert_eq!(apps[0].name, "Firefox User", "first root wins");
+        assert_eq!(apps[1].id, "only-system");
+    }
+
+    #[test]
+    fn discovery_reads_custom_xdg_dir_like_flatpak_exports() {
+        let exports = TempDir::new("hyprburst-disc-flatpak");
+        write_entry(exports.path(), "com.example.App.desktop", "Flatpak App");
+
+        let apps = discover_in(&[exports.path().to_path_buf()]);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].id, "com.example.App");
+        assert_eq!(apps[0].name, "Flatpak App");
+    }
+
+    #[test]
+    fn discovery_hidden_override_shadows_system_entry() {
+        // A user's NoDisplay copy of a system id hides it entirely.
+        let user = TempDir::new("hyprburst-disc-hide");
+        let system = TempDir::new("hyprburst-disc-hide2");
+        fs::create_dir_all(user.path().join("applications")).unwrap();
+        fs::write(
+            user.path().join("applications").join("secret.desktop"),
+            "[Desktop Entry]\nName=Secret\nExec=secret\nNoDisplay=true\n",
+        )
+        .unwrap();
+        write_entry(system.path(), "secret.desktop", "Secret System");
+
+        let apps = discover_in(&[user.path().to_path_buf(), system.path().to_path_buf()]);
+        assert!(apps.is_empty(), "NoDisplay override hides the system app");
+    }
+
+    #[test]
+    fn discovery_ignores_roots_without_applications_dir() {
+        let empty = TempDir::new("hyprburst-disc-empty");
+        let apps = discover_in(&[empty.path().to_path_buf()]);
+        assert!(apps.is_empty());
+    }
 
     #[test]
     fn parses_valid_desktop_entry() {

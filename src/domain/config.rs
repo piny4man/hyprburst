@@ -18,6 +18,14 @@ pub(crate) const DEFAULT_APP_ID: &str = "hyprburst";
 pub(crate) const DEFAULT_WINDOW_WIDTH: u32 = 640;
 pub(crate) const DEFAULT_WINDOW_HEIGHT: u32 = 720;
 pub(crate) const DEFAULT_FONT_SIZE: f32 = 20.0;
+
+/// Sanity floor/ceiling for `[font] size`. Glyphs are rasterized at
+/// `size × DPI scale`, and the resulting cell metrics feed pixel-buffer
+/// allocations (glyph coverage, atlas tiles), so the value is bounded where
+/// those multiplications stay far from overflow. Sizes below ~6px don't
+/// render legibly anyway.
+pub const MIN_FONT_SIZE: f32 = 6.0;
+pub const MAX_FONT_SIZE: f32 = 128.0;
 /// Opacity of the background panel painted behind the launcher when the surface
 /// is transparent: `1.0` fully hides Hyprland's blur, lower values let more of it
 /// through. Dims the blur so text stays legible instead of floating on a raw
@@ -452,6 +460,12 @@ impl RawFont {
                     "font.size must be a positive number".to_string(),
                 ));
             }
+            Some(s) if !(MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&s) => {
+                return Err(ConfigError::Validation(format!(
+                    "font.size must be between {} and {} pixels",
+                    MIN_FONT_SIZE, MAX_FONT_SIZE
+                )));
+            }
             Some(s) => s,
             None => defaults.size,
         };
@@ -589,7 +603,10 @@ fn parse_color(input: &str) -> Result<Color, String> {
     }
 
     if let Some(hex) = trimmed.strip_prefix('#') {
-        if hex.len() != 6 {
+        // The length check counts bytes, so a 6-byte value containing a
+        // multi-byte char would pass it and the fixed-offset slices below
+        // would panic mid-char-boundary. Require plain ASCII hex digits.
+        if hex.len() != 6 || !hex.is_ascii() {
             return Err(format!(
                 "expected 6-digit hex code like #RRGGBB, got {:?}",
                 input
@@ -742,6 +759,24 @@ prompt = "#ff8800"
         )
         .unwrap();
         assert_eq!(cfg.colors.prompt, Color::Rgb(0xff, 0x88, 0x00));
+    }
+
+    #[test]
+    fn multibyte_hex_color_rejected_not_panics() {
+        // Six *bytes* but fewer chars: the byte-length check alone would pass
+        // and byte-slicing would panic mid-char-boundary. These must come back
+        // as validation errors instead.
+        for input in [
+            "#ab\u{1000}x", // U+1000 is 3 bytes; slice at offset 2..4 splits it
+            "#\u{1000}ab1", // multi-byte char straddles the first 0..2 slice
+        ] {
+            let err =
+                Config::from_toml_str(&format!("[colors]\nprompt = \"{input}\"")).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Validation(_)),
+                "{input:?} should be rejected, got {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -970,6 +1005,29 @@ size = 18.0
     fn non_positive_font_size_rejected() {
         let err = Config::from_toml_str("[font]\nsize = 0.0\n").unwrap_err();
         assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn absurd_font_size_rejected_with_range_message() {
+        let err = Config::from_toml_str("[font]\nsize = 10000.0\n").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(matches!(err, ConfigError::Validation(_)), "got: {}", msg);
+        assert!(msg.contains("between 6 and 128"), "got: {}", msg);
+    }
+
+    #[test]
+    fn below_floor_font_size_rejected() {
+        let err = Config::from_toml_str("[font]\nsize = 2.5\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Validation(_)));
+    }
+
+    #[test]
+    fn boundary_font_sizes_accepted() {
+        for size in [6.0, 128.0] {
+            let cfg =
+                Config::from_toml_str(&format!("[font]\nsize = {size}\n")).expect("valid size");
+            assert_eq!(cfg.font.size, size);
+        }
     }
 
     #[test]

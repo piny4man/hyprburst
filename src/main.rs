@@ -98,20 +98,28 @@ fn run_tui() -> io::Result<()> {
     }));
 
     let mut app = App::new(config);
-
+    let mut force_draw = true;
     while app.running {
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                frame.render_widget(&mut app, area);
-                app.apply_effects(frame, area);
-            })
-            .expect("terminal draw failed");
-        if let Some(input) = input::poll()? {
+        // Block up to one frame for the first event, then drain the burst and
+        // apply it all before a single redraw.
+        let inputs = input::poll_batch()?;
+        let got_input = !inputs.is_empty();
+        for input in inputs {
             match input {
                 input::Input::Key(code) => app.handle_key(code),
                 input::Input::Mouse(event) => app.handle_mouse(event),
             }
+        }
+
+        if force_draw || got_input || app.effects_running() {
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    frame.render_widget(&mut app, area);
+                    app.apply_effects(frame, area);
+                })
+                .map_err(|err| io::Error::other(format!("terminal draw failed: {err}")))?;
+            force_draw = false;
         }
     }
 

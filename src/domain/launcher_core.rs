@@ -12,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::domain::config::Config;
 use crate::domain::desktop::{DesktopEntry, discover_apps};
 use crate::domain::history::{History, score as history_score};
-use crate::domain::icon::fallback_glyph;
 use crate::domain::search::filter_and_rank;
 
 /// Abstract interaction vocabulary for the launcher.
@@ -203,7 +202,8 @@ impl LauncherCore {
                 EntryView {
                     name: &app.name,
                     icon_name: &app.icon,
-                    icon_glyph: icon_glyph_for(app),
+                    // Resolved once at discovery; no per-frame work here.
+                    icon_glyph: app.glyph,
                     selected: i == self.selected_index,
                 }
             })
@@ -217,14 +217,9 @@ impl LauncherCore {
     }
 
     fn rebuild_filtered(&mut self) {
-        let ranked = filter_and_rank(&self.query, &self.apps, &self.scores);
-        self.filtered = ranked
-            .into_iter()
-            .map(|(app, score)| {
-                let idx = self.apps.iter().position(|a| std::ptr::eq(a, app)).unwrap();
-                (idx, score)
-            })
-            .collect();
+        // filter_and_rank returns (index, score) pairs directly — no recovery
+        // scan, no pointer-identity unwrap.
+        self.filtered = filter_and_rank(&self.query, &self.apps, &self.scores);
         self.selected_index = 0;
     }
 
@@ -299,11 +294,6 @@ impl LauncherCore {
     }
 }
 
-/// Resolve the Nerd Font glyph the given app should render with.
-pub(crate) fn icon_glyph_for(app: &DesktopEntry) -> &'static str {
-    fallback_glyph(&app.icon, &app.name)
-}
-
 fn load_scores(history: &History) -> HashMap<String, f64> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -343,24 +333,9 @@ mod tests {
 
     fn three_apps() -> Vec<DesktopEntry> {
         vec![
-            DesktopEntry {
-                id: "app-a".into(),
-                name: "App A".into(),
-                icon: "icon-a".into(),
-                exec: "app-a".into(),
-            },
-            DesktopEntry {
-                id: "app-b".into(),
-                name: "App B".into(),
-                icon: "icon-b".into(),
-                exec: "app-b".into(),
-            },
-            DesktopEntry {
-                id: "app-c".into(),
-                name: "App C".into(),
-                icon: "icon-c".into(),
-                exec: "app-c".into(),
-            },
+            DesktopEntry::new("app-a", "App A", "icon-a", "app-a"),
+            DesktopEntry::new("app-b", "App B", "icon-b", "app-b"),
+            DesktopEntry::new("app-c", "App C", "icon-c", "app-c"),
         ]
     }
 
@@ -370,12 +345,7 @@ mod tests {
 
     fn core_with_n_apps(n: usize) -> LauncherCore {
         let apps: Vec<DesktopEntry> = (0..n)
-            .map(|i| DesktopEntry {
-                id: format!("app-{}", i),
-                name: format!("App {}", i),
-                icon: format!("icon-{}", i),
-                exec: format!("app-{}", i),
-            })
+            .map(|i| DesktopEntry::new(format!("app-{}", i), format!("App {}", i), "", ""))
             .collect();
         LauncherCore::for_test(apps, Config::default())
     }
@@ -536,24 +506,22 @@ mod tests {
 
     #[test]
     fn icon_glyph_maps_known_app_to_nerd_font() {
-        let app = DesktopEntry {
-            id: "firefox".into(),
-            name: "Firefox".into(),
-            icon: "firefox".into(),
-            exec: "firefox".into(),
-        };
-        assert_eq!(icon_glyph_for(&app), "\u{f269}");
+        // The glyph is derived once at construction (the same path discovery
+        // uses) and stored on the entry.
+        let app = DesktopEntry::new("firefox", "Firefox", "firefox", "firefox");
+        assert_eq!(app.glyph, "\u{f269}");
     }
 
     #[test]
     fn icon_glyph_unknown_app_returns_generic() {
-        let app = DesktopEntry {
-            id: "xyz".into(),
-            name: "Qwerty".into(),
-            icon: "zzz".into(),
-            exec: "qwerty".into(),
-        };
-        assert_eq!(icon_glyph_for(&app), "\u{f1b2}");
+        let app = DesktopEntry::new("xyz", "Qwerty", "zzz", "qwerty");
+        assert_eq!(app.glyph, "\u{f1b2}");
+    }
+
+    #[test]
+    fn glyph_is_derived_from_name_when_icon_is_empty() {
+        let app = DesktopEntry::new("x", "Firefox Web Browser", "", "");
+        assert_eq!(app.glyph, "\u{f269}");
     }
 
     #[test]

@@ -41,16 +41,19 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
+use rio_vt::crosswords::grid::row::Row;
+use rio_vt::crosswords::square::Square;
 
 use crate::bench;
 use crate::domain::config::Config;
 use crate::domain::launcher_core::{LauncherAction, LauncherCore};
 use crate::gpu::grid::{
-    Atlas, CellMetrics, GlyphKey, GridSize, cell_at_pixel, cell_rect, grid_size,
+    Atlas, BgCell, CellInstance, CellMetrics, GlyphKey, GridSize, cell_at_pixel, cell_rect,
+    grid_size,
 };
 use crate::gpu::rio::{KeyInput, Session};
 use crate::view::layout::entry_at;
-use crate::view::render::render_core;
+use crate::view::render::{RenderCache, render_core};
 
 /// Atlas texture dimensions — ample for a launcher's character set.
 const ATLAS_W: u32 = 2048;
@@ -76,9 +79,7 @@ pub fn run(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = match crate::gpu::font::resolve_font_bytes(config.font.path.as_deref())
-        .and_then(|bytes| FontVec::try_from_vec(bytes).ok())
-    {
+    let font = match crate::gpu::font::resolve_font(config.font.path.as_deref()) {
         Some(font) => font,
         None => {
             return Err(
@@ -107,9 +108,7 @@ pub fn run_rio(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = match crate::gpu::font::resolve_font_bytes(config.font.path.as_deref())
-        .and_then(|bytes| FontVec::try_from_vec(bytes).ok())
-    {
+    let font = match crate::gpu::font::resolve_font(config.font.path.as_deref()) {
         Some(font) => font,
         None => {
             return Err(
@@ -174,6 +173,19 @@ struct App {
     panel: Option<[f32; 4]>,
     /// When the fade-in began (first painted frame); `None` until then.
     fade_start: Option<Instant>,
+    /// Persistent launcher buffer, reused across frames so a keystroke doesn't
+    /// reallocate the whole cell grid (`None` until the first paint).
+    buf: Option<Buffer>,
+    /// Reused per-frame cell lists (launcher + Rio paths share them).
+    bgs: Vec<BgCell>,
+    glyphs: Vec<CellInstance>,
+    /// Scratch rows for the Rio damage snapshot (`fill_visible_rows` target).
+    rio_rows: Vec<Row<Square>>,
+    /// Whether anything changed since the last painted frame. When false and
+    /// the fade-in is done, an idle window skips rebuild, upload, *and* present.
+    repaint_needed: bool,
+    /// Shared render-string/layout cache for the launcher buffer path.
+    render_cache: RenderCache,
 }
 
 impl App {
@@ -229,6 +241,12 @@ impl App {
             clear,
             panel,
             fade_start: None,
+            buf: None,
+            bgs: Vec::new(),
+            glyphs: Vec::new(),
+            rio_rows: Vec::new(),
+            repaint_needed: true,
+            render_cache: RenderCache::new(),
             frontend,
             gl: None,
             cell: CellMetrics::new(1, 1),
@@ -292,6 +310,7 @@ impl ApplicationHandler<()> for App {
         self.cell = gl.renderer.cell;
         let grid = grid_size((size.width, size.height), self.cell);
         self.grid = (grid.cols, grid.rows);
+        self.repaint_needed = true;
 
         match &mut self.frontend {
             Frontend::Launcher(_) => gl.window.request_redraw(),
@@ -326,6 +345,7 @@ impl ApplicationHandler<()> for App {
                 }
                 let grid = grid_size((size.width, size.height), self.cell);
                 self.grid = (grid.cols, grid.rows);
+                self.repaint_needed = true;
                 if let Frontend::Rio {
                     session: Some(session),
                     ..
@@ -347,6 +367,7 @@ impl ApplicationHandler<()> for App {
                         Frontend::Launcher(core) => {
                             if let Some(action) = key_to_action(&event) {
                                 core.apply(action);
+                                self.repaint_needed = true;
                                 if !core.running() {
                                     event_loop.exit();
                                 } else if let Some(gl) = &self.gl {
@@ -416,56 +437,100 @@ impl ApplicationHandler<()> for App {
                     event_loop.exit();
                     return;
                 }
-                if let Some(gl) = &mut self.gl {
-                    let frame = match &mut self.frontend {
-                        Frontend::Launcher(core) => build_cells(core, self.grid, self.fg),
-                        Frontend::Rio {
-                            session: Some(session),
-                            ..
-                        } => build_rio_cells(session, self.fg, self.bg),
-                        Frontend::Rio { session: None, .. } => Frame {
-                            bgs: Vec::new(),
-                            glyphs: Vec::new(),
-                        },
-                    };
-                    // Fade-in: ease-out ramp of the global alpha over FADE_SECS,
-                    // measured from the first painted frame.
-                    let fade_start = self.fade_start.get_or_insert_with(Instant::now);
-                    let t = (fade_start.elapsed().as_secs_f32() / FADE_SECS).clamp(0.0, 1.0);
-                    let alpha = 1.0 - (1.0 - t).powi(4);
-                    unsafe {
-                        let size = gl.window.inner_size();
-                        gl.renderer.draw(
-                            &gl.gl,
-                            &self.font,
-                            size.width,
-                            size.height,
-                            &frame,
-                            self.clear,
-                            self.panel,
-                            alpha,
+                let Some(gl) = &mut self.gl else {
+                    return;
+                };
+
+                // While the fade-in runs, every frame changes the global alpha.
+                // Once it's done, a frame is only worth painting when something
+                // actually changed — an idle window does zero work here.
+                let fade_done = self
+                    .fade_start
+                    .is_some_and(|s| s.elapsed().as_secs_f32() >= FADE_SECS);
+                if !self.repaint_needed && fade_done {
+                    return;
+                }
+
+                match &mut self.frontend {
+                    Frontend::Launcher(core) => {
+                        build_cells(
+                            core,
+                            &mut self.render_cache,
+                            self.grid,
+                            self.fg,
+                            &mut self.buf,
+                            &mut self.bgs,
+                            &mut self.glyphs,
                         );
                     }
-                    let _ = gl.surface.swap_buffers(&gl.context);
-
-                    // Keep animating until the fade completes.
-                    if t < 1.0 {
-                        gl.window.request_redraw();
+                    Frontend::Rio {
+                        session: Some(session),
+                        ..
+                    } => {
+                        let changed = session.frame_into(
+                            self.fg,
+                            self.bg,
+                            &mut self.rio_rows,
+                            &mut self.bgs,
+                            &mut self.glyphs,
+                        );
+                        if !changed && fade_done {
+                            // The wake carried no visible change; skip the draw
+                            // and present, and stay idle until the next event.
+                            self.repaint_needed = false;
+                            return;
+                        }
                     }
-
-                    // Stamp the honest cold-start at the first present.
-                    let ns = (self.start.elapsed().as_nanos() as u64).max(1);
-                    let first = FIRST_PRESENT_NS
-                        .compare_exchange(0, ns, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok();
-                    if first && MEASURE.load(Ordering::SeqCst) {
-                        let variant = match &self.frontend {
-                            Frontend::Launcher(_) => "gui",
-                            Frontend::Rio { .. } => "rio-vt",
-                        };
-                        report(variant, ns);
-                        event_loop.exit();
+                    Frontend::Rio { session: None, .. } => {
+                        self.bgs.clear();
+                        self.glyphs.clear();
                     }
+                }
+
+                // Fade-in: ease-out ramp of the global alpha over FADE_SECS,
+                // measured from the first painted frame.
+                let fade_start = self.fade_start.get_or_insert_with(Instant::now);
+                let t = (fade_start.elapsed().as_secs_f32() / FADE_SECS).clamp(0.0, 1.0);
+                let alpha = 1.0 - (1.0 - t).powi(4);
+                unsafe {
+                    let size = gl.window.inner_size();
+                    gl.renderer.draw(
+                        &gl.gl,
+                        &self.font,
+                        size.width,
+                        size.height,
+                        &self.bgs,
+                        &self.glyphs,
+                        self.clear,
+                        self.panel,
+                        alpha,
+                    );
+                }
+                if let Err(err) = gl.surface.swap_buffers(&gl.context)
+                    && !gl.swap_warned
+                {
+                    gl.swap_warned = true;
+                    eprintln!("hyprburst: buffer swap failed: {err:?}");
+                }
+                self.repaint_needed = false;
+
+                // Keep animating until the fade completes.
+                if t < 1.0 {
+                    gl.window.request_redraw();
+                }
+
+                // Stamp the honest cold-start at the first present.
+                let ns = (self.start.elapsed().as_nanos() as u64).max(1);
+                let first = FIRST_PRESENT_NS
+                    .compare_exchange(0, ns, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok();
+                if first && MEASURE.load(Ordering::SeqCst) {
+                    let variant = match &self.frontend {
+                        Frontend::Launcher(_) => "gui",
+                        Frontend::Rio { .. } => "rio-vt",
+                    };
+                    report(variant, ns);
+                    event_loop.exit();
                 }
             }
             _ => {}
@@ -482,24 +547,40 @@ impl ApplicationHandler<()> for App {
             event_loop.exit();
             return;
         }
+        // A PTY wake means bytes may have arrived; whether they changed any
+        // visible cell is decided by the damage gate at frame-build time.
+        self.repaint_needed = true;
         if let Some(gl) = &self.gl {
             gl.window.request_redraw();
         }
     }
 }
 
-/// Render the launcher into a buffer sized to the grid and collect the non-blank
-/// cells the GL renderer draws. This is the live analog of the headless
-/// [`crate::gpu::grid::GuiModel`] paint, minus the dirty diff (the live renderer
-/// redraws the whole frame each time — the launcher repaints only on input).
-fn build_cells(core: &mut LauncherCore, grid: (u16, u16), default_fg: [f32; 3]) -> Frame {
+/// Render the launcher into a caller-owned buffer sized to the grid and collect
+/// the non-blank cells the GL renderer draws into reused lists. The buffer and
+/// cell lists persist across frames, so a keystroke reuses their capacity
+/// instead of reallocating the whole grid.
+fn build_cells(
+    core: &mut LauncherCore,
+    cache: &mut RenderCache,
+    grid: (u16, u16),
+    default_fg: [f32; 3],
+    buf_slot: &mut Option<Buffer>,
+    bgs: &mut Vec<BgCell>,
+    glyphs: &mut Vec<CellInstance>,
+) {
     let area = Rect::new(0, 0, grid.0, grid.1);
-    let mut buf = Buffer::empty(area);
-    render_core(core, area, &mut buf);
+    let buf = buf_slot.get_or_insert_with(|| Buffer::empty(area));
+    if buf.area != area {
+        *buf = Buffer::empty(area);
+    } else {
+        buf.reset();
+    }
+    render_core(cache, core, area, buf);
 
     let width = area.width;
-    let mut bgs = Vec::new();
-    let mut glyphs = Vec::new();
+    bgs.clear();
+    glyphs.clear();
     for (i, cell) in buf.content().iter().enumerate() {
         let i = i as u16;
         let (col, row) = (i % width, i / width);
@@ -525,33 +606,6 @@ fn build_cells(core: &mut LauncherCore, grid: (u16, u16), default_fg: [f32; 3]) 
                 color: ratatui_rgb(cell.fg, default_fg),
             });
         }
-    }
-    Frame { bgs, glyphs }
-}
-
-fn build_rio_cells(session: &Session, default_fg: [f32; 3], default_bg: [f32; 3]) -> Frame {
-    let frame = session.frame(default_fg, default_bg);
-    Frame {
-        bgs: frame
-            .backgrounds
-            .into_iter()
-            .map(|cell| BgCell {
-                col: cell.col,
-                row: cell.row,
-                color: cell.color,
-            })
-            .collect(),
-        glyphs: frame
-            .glyphs
-            .into_iter()
-            .map(|cell| CellInstance {
-                col: cell.col,
-                row: cell.row,
-                ch: cell.ch,
-                bold: cell.bold,
-                color: cell.color,
-            })
-            .collect(),
     }
 }
 
@@ -603,6 +657,9 @@ struct GlState {
     context: PossiblyCurrentContext,
     gl: glow::Context,
     renderer: CellRenderer,
+    /// Set after the first `swap_buffers` failure is reported, so a persistently
+    /// broken surface logs once instead of spamming every frame.
+    swap_warned: bool,
 }
 
 impl GlState {
@@ -619,6 +676,8 @@ impl GlState {
 
         let (window, gl_config) = display_builder.build(event_loop, template, |configs| {
             // Prefer a config with the most alpha bits (for the blur windowrule).
+            // (The glutin callback API can only signal "no configs" by panicking;
+            // a driver offering zero configs fails context creation anyway.)
             configs
                 .reduce(|acc, cfg| {
                     if cfg.alpha_size() > acc.alpha_size() {
@@ -627,7 +686,7 @@ impl GlState {
                         acc
                     }
                 })
-                .expect("no GL config")
+                .expect("no GL configs offered by the driver")
         })?;
         let window = window.ok_or("winit did not create a window")?;
 
@@ -647,7 +706,7 @@ impl GlState {
         };
 
         let fm = font_metrics(font, window.scale_factor(), font_px);
-        let renderer = unsafe { CellRenderer::new(&gl, &fm) };
+        let renderer = unsafe { CellRenderer::new(&gl, &fm)? };
 
         Ok(Self {
             window,
@@ -655,6 +714,7 @@ impl GlState {
             context,
             gl,
             renderer,
+            swap_warned: false,
         })
     }
 
@@ -664,29 +724,6 @@ impl GlState {
             unsafe { self.gl.viewport(0, 0, width as i32, height as i32) };
         }
     }
-}
-
-/// One non-blank cell to draw, resolved from the rendered launcher buffer.
-struct CellInstance {
-    col: u16,
-    row: u16,
-    ch: char,
-    bold: bool,
-    color: [f32; 3],
-}
-
-/// A cell with a non-default background — a solid quad drawn behind the glyphs
-/// (e.g. the selection highlight bar, which spans the row including its spaces).
-struct BgCell {
-    col: u16,
-    row: u16,
-    color: [f32; 4],
-}
-
-/// One painted frame: the background fills (drawn first) and the glyph cells.
-struct Frame {
-    bgs: Vec<BgCell>,
-    glyphs: Vec<CellInstance>,
 }
 
 /// The OpenGL cell renderer: a textured-quad shader, a glyph atlas texture fed by
@@ -709,6 +746,8 @@ struct CellRenderer {
     cell: CellMetrics,
     scale: ab_glyph::PxScale,
     ascent: f32,
+    /// Vertex scratch reused across frames; capacity grows once and stays.
+    verts: Vec<f32>,
 }
 
 /// Append one vertex (pos.xy px, uv.xy, color.rgba) to the buffer.
@@ -742,10 +781,20 @@ const VERTEX_FLOATS: usize = 8;
 impl CellRenderer {
     /// # Safety
     /// `gl` must be a current context for the lifetime of the renderer.
-    unsafe fn new(gl: &glow::Context, fm: &FontMetrics) -> Self {
-        let program = unsafe { build_program(gl) };
-        let vao = unsafe { gl.create_vertex_array().expect("vao") };
-        let vbo = unsafe { gl.create_buffer().expect("vbo") };
+    ///
+    /// Returns `Err` instead of panicking on GL object-creation or shader
+    /// failures — those are driver-dependent conditions, not logic bugs, and
+    /// the caller surfaces them as a clean `GL bootstrap failed` exit.
+    unsafe fn new(gl: &glow::Context, fm: &FontMetrics) -> Result<Self, String> {
+        let program = unsafe { build_program(gl)? };
+        let vao = unsafe {
+            gl.create_vertex_array()
+                .map_err(|e| format!("create VAO: {e:?}"))?
+        };
+        let vbo = unsafe {
+            gl.create_buffer()
+                .map_err(|e| format!("create VBO: {e:?}"))?
+        };
         let viewport_loc = unsafe { gl.get_uniform_location(program, "u_viewport") };
         let atlas_loc = unsafe { gl.get_uniform_location(program, "u_atlas") };
         let alpha_loc = unsafe { gl.get_uniform_location(program, "u_alpha") };
@@ -755,15 +804,23 @@ impl CellRenderer {
         // the glyph shader and draw call. The sentinel key never collides with a
         // real glyph; real glyphs take slots 1+.
         let mut atlas = Atlas::new((ATLAS_W, ATLAS_H), fm.cell);
-        let white_slot = atlas
-            .get_or_insert(GlyphKey::new('\0', false))
-            .expect("atlas has room for the white texel");
+        let Some(white_slot) = atlas.get_or_insert(GlyphKey::new('\0')) else {
+            return Err("atlas has no room for the white texel".into());
+        };
         let (wu0, wv0, wu1, wv1) = atlas.uv_rect(white_slot);
         let white_uv = ((wu0 + wu1) * 0.5, (wv0 + wv1) * 0.5);
 
-        let atlas_tex = unsafe { gl.create_texture().expect("atlas tex") };
+        let atlas_tex = unsafe {
+            gl.create_texture()
+                .map_err(|e| format!("create atlas texture: {e:?}"))?
+        };
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(atlas_tex));
+            // Byte-aligned unpack rows BEFORE any upload. The white-tile fill
+            // below is `cell_w` pixels wide, which need not be a multiple of
+            // GL's default 4-byte row alignment; uploading under the default
+            // makes the driver read past the buffer's end.
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -777,17 +834,23 @@ impl CellRenderer {
             );
             // Fill the reserved white tile (slot 0) with full coverage.
             let (cw, chh) = (fm.cell.cell_w, fm.cell.cell_h);
-            gl.tex_sub_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                white_slot.px.0 as i32,
-                white_slot.px.1 as i32,
-                cw as i32,
-                chh as i32,
-                glow::RED,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&vec![255u8; (cw * chh) as usize])),
-            );
+            // Checked: this product backs the upload buffer; a metrics bug
+            // must not wrap it into an undersized slice for GL to read past.
+            if let Some(len) = cw.checked_mul(chh) {
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    white_slot.px.0 as i32,
+                    white_slot.px.1 as i32,
+                    cw as i32,
+                    chh as i32,
+                    glow::RED,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&vec![255u8; len as usize])),
+                );
+            } else {
+                eprintln!("hyprburst: cell metrics {cw}x{chh} overflow; skipping white-tile fill");
+            }
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
@@ -798,12 +861,11 @@ impl CellRenderer {
                 glow::TEXTURE_MAG_FILTER,
                 glow::LINEAR as i32,
             );
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.enable(glow::BLEND);
             gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
         }
 
-        Self {
+        Ok(Self {
             program,
             vao,
             vbo,
@@ -816,19 +878,19 @@ impl CellRenderer {
             cell: fm.cell,
             scale: PxScale::from(fm.px),
             ascent: fm.ascent,
-        }
+            verts: Vec::new(),
+        })
     }
 
-    /// Ensure `(ch, bold)` is resident in the atlas, rasterizing + uploading it on
+    /// Ensure `ch` is resident in the atlas, rasterizing + uploading it on
     /// first sight. Returns its normalized UV rect, or `None` if the atlas is full.
     fn ensure_glyph(
         &mut self,
         gl: &glow::Context,
         font: &FontVec,
         ch: char,
-        bold: bool,
     ) -> Option<(f32, f32, f32, f32)> {
-        let slot = self.atlas.get_or_insert(GlyphKey::new(ch, bold))?;
+        let slot = self.atlas.get_or_insert(GlyphKey::new(ch))?;
         if slot.newly_inserted {
             self.rasterize_into(gl, font, ch, slot.px);
         }
@@ -838,7 +900,13 @@ impl CellRenderer {
     /// Rasterize `ch` into the atlas tile at pixel origin `px` via `ab_glyph`.
     fn rasterize_into(&self, gl: &glow::Context, font: &FontVec, ch: char, px: (u32, u32)) {
         let (cw, ch_px) = (self.cell.cell_w, self.cell.cell_h);
-        let mut coverage = vec![0u8; (cw * ch_px) as usize];
+        // Checked: this product is both the coverage buffer length and the
+        // upload's declared pixel count; a metrics bug must not wrap it into
+        // an undersized slice for GL to read past.
+        let Some(buf_len) = cw.checked_mul(ch_px) else {
+            return;
+        };
+        let mut coverage = vec![0u8; buf_len as usize];
         let glyph = font
             .glyph_id(ch)
             .with_scale_and_position(self.scale, ab_glyph::point(0.0, self.ascent));
@@ -848,7 +916,9 @@ impl CellRenderer {
                 let x = gx as i32 + bounds.min.x as i32;
                 let y = gy as i32 + bounds.min.y as i32;
                 if x >= 0 && (x as u32) < cw && y >= 0 && (y as u32) < ch_px {
-                    let idx = (y as u32 * cw + x as u32) as usize;
+                    // usize math: no u32 intermediate can overflow here since
+                    // y < ch_px and x < cw and cw × ch_px fits (checked above).
+                    let idx = y as usize * cw as usize + x as usize;
                     coverage[idx] = (c * 255.0) as u8;
                 }
             });
@@ -880,26 +950,31 @@ impl CellRenderer {
     /// # Safety
     /// `gl` must be the current context.
     #[allow(clippy::too_many_arguments)]
+    /// Build the frame's vertices from the cell lists and draw them in one call.
+    /// Only called when a repaint is actually needed (see `App::repaint_needed`):
+    /// on change we re-orphan + refill the VBO via `buffer_data`, the standard
+    /// driver-friendly dynamic path, instead of sub-updating variable slices.
+    #[allow(clippy::too_many_arguments)]
     unsafe fn draw(
         &mut self,
         gl: &glow::Context,
         font: &FontVec,
         width: u32,
         height: u32,
-        frame: &Frame,
+        bgs: &[BgCell],
+        glyphs: &[CellInstance],
         clear: [f32; 4],
         panel: Option<[f32; 4]>,
         alpha: f32,
     ) {
         let cell = self.cell;
         let white = self.white_uv;
-        let quads = frame.glyphs.len() + frame.bgs.len() + 1;
-        let mut verts: Vec<f32> = Vec::with_capacity(quads * 6 * VERTEX_FLOATS);
+        self.verts.clear();
 
         // 1. Full-window dimming panel, behind everything.
         if let Some(color) = panel {
             push_solid_quad(
-                &mut verts,
+                &mut self.verts,
                 0.0,
                 0.0,
                 width as f32,
@@ -909,10 +984,10 @@ impl CellRenderer {
             );
         }
         // 2. Per-cell background fills (the selection bar).
-        for b in &frame.bgs {
+        for b in bgs {
             let (x, y, w, h) = cell_rect(b.col, b.row, cell);
             push_solid_quad(
-                &mut verts,
+                &mut self.verts,
                 x as f32,
                 y as f32,
                 (x + w) as f32,
@@ -921,20 +996,21 @@ impl CellRenderer {
                 b.color,
             );
         }
-        // 3. Glyph quads on top.
-        for c in &frame.glyphs {
-            let Some((u0, v0, u1, v1)) = self.ensure_glyph(gl, font, c.ch, c.bold) else {
+        // 3. Glyph quads on top. The verts borrow is taken per push so it never
+        // overlaps `ensure_glyph`'s `&mut self` (atlas insertion).
+        for c in glyphs {
+            let Some((u0, v0, u1, v1)) = self.ensure_glyph(gl, font, c.ch) else {
                 continue;
             };
             let (x, y, w, h) = cell_rect(c.col, c.row, cell);
             let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
             let col = [c.color[0], c.color[1], c.color[2], 1.0];
-            push_vert(&mut verts, x0, y0, u0, v0, col);
-            push_vert(&mut verts, x1, y0, u1, v0, col);
-            push_vert(&mut verts, x1, y1, u1, v1, col);
-            push_vert(&mut verts, x0, y0, u0, v0, col);
-            push_vert(&mut verts, x1, y1, u1, v1, col);
-            push_vert(&mut verts, x0, y1, u0, v1, col);
+            push_vert(&mut self.verts, x0, y0, u0, v0, col);
+            push_vert(&mut self.verts, x1, y0, u1, v0, col);
+            push_vert(&mut self.verts, x1, y1, u1, v1, col);
+            push_vert(&mut self.verts, x0, y0, u0, v0, col);
+            push_vert(&mut self.verts, x1, y1, u1, v1, col);
+            push_vert(&mut self.verts, x0, y1, u0, v1, col);
         }
 
         unsafe {
@@ -942,7 +1018,7 @@ impl CellRenderer {
             gl.clear_color(clear[0], clear[1], clear[2], clear[3]);
             gl.clear(glow::COLOR_BUFFER_BIT);
 
-            if verts.is_empty() {
+            if self.verts.is_empty() {
                 return;
             }
 
@@ -955,6 +1031,7 @@ impl CellRenderer {
 
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+            let verts = &self.verts;
             let bytes = core::slice::from_raw_parts(
                 verts.as_ptr() as *const u8,
                 std::mem::size_of_val(verts.as_slice()),
@@ -975,11 +1052,13 @@ impl CellRenderer {
     }
 }
 
-/// Compile the textured-quad shader program.
+/// Compile the textured-quad shader program. Returns `Err` with the info log
+/// when compilation or linking fails, so a driver problem surfaces as a clean
+/// bootstrap error instead of silently drawing nothing.
 ///
 /// # Safety
 /// `gl` must be a current context.
-unsafe fn build_program(gl: &glow::Context) -> glow::Program {
+unsafe fn build_program(gl: &glow::Context) -> Result<glow::Program, String> {
     const VS: &str = r#"#version 330 core
 layout (location = 0) in vec2 a_pos;
 layout (location = 1) in vec2 a_uv;
@@ -1009,28 +1088,36 @@ void main() {
 }
 "#;
     unsafe {
-        let program = gl.create_program().expect("program");
-        for (kind, src) in [(glow::VERTEX_SHADER, VS), (glow::FRAGMENT_SHADER, FS)] {
-            let shader = gl.create_shader(kind).expect("shader");
+        let program = gl
+            .create_program()
+            .map_err(|e| format!("create program: {e:?}"))?;
+        for (kind, name, src) in [
+            (glow::VERTEX_SHADER, "vertex", VS),
+            (glow::FRAGMENT_SHADER, "fragment", FS),
+        ] {
+            let shader = gl
+                .create_shader(kind)
+                .map_err(|e| format!("create shader: {e:?}"))?;
             gl.shader_source(shader, src);
             gl.compile_shader(shader);
             if !gl.get_shader_compile_status(shader) {
-                eprintln!(
-                    "hyprburst: shader compile error: {}",
+                return Err(format!(
+                    "{} shader compile error: {}",
+                    name,
                     gl.get_shader_info_log(shader)
-                );
+                ));
             }
             gl.attach_shader(program, shader);
             gl.delete_shader(shader);
         }
         gl.link_program(program);
         if !gl.get_program_link_status(program) {
-            eprintln!(
-                "hyprburst: program link error: {}",
+            return Err(format!(
+                "program link error: {}",
                 gl.get_program_info_log(program)
-            );
+            ));
         }
-        program
+        Ok(program)
     }
 }
 

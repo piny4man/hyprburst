@@ -7,31 +7,97 @@
 
 use ratatui::prelude::*;
 
+use crate::domain::config::Config;
 use crate::domain::launcher_core::{EmptyReason, LauncherCore};
 use crate::view::layout::{self, LayoutRects};
 
-/// Render a [`LauncherCore`] into a ratatui buffer.
-pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
-    let LayoutRects {
-        banner: banner_area,
-        input: input_area,
-        separator: separator_area,
-        list: list_area,
-        columns,
-    } = layout::compute(area, core.config());
-    core.set_columns(columns);
+/// Geometry and config-derived strings recomputed only when the terminal
+/// geometry changes. Steady-state frames paint from this cache without a single
+/// heap allocation beyond the per-cell label buffer (reused, capacity retained).
+pub struct RenderCache {
+    key: (u16, u16, u16, u16),
+    rects: LayoutRects,
+    /// The banner split into owned lines (`config.ui.banner.lines()`), so the
+    /// frame path never re-splits or re-counts it.
+    banner_lines: Vec<String>,
+    /// `"─" * separator.width`.
+    sep_line: String,
+    /// Spaces matching the selected-marker width (unselected row prefix).
+    unselected_prefix: String,
+    /// One cell-width of spaces, sliced down for selection-bar padding.
+    padding_spaces: String,
+}
+
+impl RenderCache {
+    pub fn new() -> Self {
+        Self {
+            key: (u16::MAX, u16::MAX, 0, 0),
+            rects: LayoutRects {
+                banner: Rect::default(),
+                input: Rect::default(),
+                separator: None,
+                list: Rect::default(),
+                columns: 1,
+            },
+            banner_lines: Vec::new(),
+            sep_line: String::new(),
+            unselected_prefix: String::new(),
+            padding_spaces: String::new(),
+        }
+    }
+
+    /// Recompute everything derived from `(area, config)` — config values are
+    /// fixed for the process's lifetime, so the geometry alone keys the cache.
+    fn refresh(&mut self, area: Rect, config: &Config) {
+        let key = (area.x, area.y, area.width, area.height);
+        if self.key == key {
+            return;
+        }
+        self.key = key;
+        self.rects = layout::compute(area, config);
+        self.unselected_prefix = " ".repeat(config.ui.selected_marker.chars().count());
+        self.sep_line = "─".repeat(self.rects.separator.map_or(0, |r| r.width as usize));
+        let cell_width = (self.rects.list.width / self.rects.columns.max(1)) as usize;
+        self.padding_spaces = " ".repeat(cell_width);
+        self.banner_lines = config.ui.banner.lines().map(str::to_string).collect();
+    }
+}
+
+impl Default for RenderCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Render a [`LauncherCore`] into a ratatui buffer, reusing `cache` across
+/// frames. Pushes the layout's column count into the core before projecting its
+/// view, so grid navigation stays consistent with what was drawn.
+pub fn render_core(cache: &mut RenderCache, core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
+    cache.refresh(area, core.config());
+    core.set_columns(cache.rects.columns);
 
     let config = core.config();
     let view = core.view();
+    let RenderCache {
+        rects,
+        banner_lines,
+        sep_line,
+        unselected_prefix,
+        padding_spaces,
+        ..
+    } = cache;
+    let banner_area = rects.banner;
+    let input_area = rects.input;
+    let separator_area = rects.separator;
+    let list_area = rects.list;
+    let columns = rects.columns;
 
     if banner_area.height > 0 && config.ui.show_banner && !config.ui.banner.is_empty() {
         let banner_style = Style::new()
             .fg(config.colors.banner)
             .add_modifier(Modifier::BOLD);
-        for (i, line) in config
-            .ui
-            .banner
-            .lines()
+        for (i, line) in banner_lines
+            .iter()
             .take(banner_area.height as usize)
             .enumerate()
         {
@@ -62,11 +128,10 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
     }
 
     if let Some(sep) = separator_area {
-        let sep_line: String = "─".repeat(sep.width as usize);
         buf.set_string(
             sep.x,
             sep.y,
-            &sep_line,
+            sep_line,
             Style::new().fg(config.colors.prompt),
         );
     }
@@ -86,13 +151,14 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
     }
 
     let marker = config.ui.selected_marker.as_str();
-    let marker_width = marker.chars().count();
-    let unselected_prefix: String = " ".repeat(marker_width);
-
     let columns = columns.max(1);
     let col_width = list_area.width / columns;
     let max_rows = list_area.height as usize;
     let max_cells = max_rows.saturating_mul(columns as usize);
+    let cell_width = col_width as usize;
+
+    // Reused label buffer: one allocation until it outgrows its capacity.
+    let mut line_buf = String::with_capacity(cell_width + 4);
 
     for (i, entry) in view.entries.iter().enumerate().take(max_cells) {
         let row = (i / columns as usize) as u16;
@@ -103,7 +169,7 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
         let cell_x = list_area.x + col * col_width;
         let cell_y = list_area.y + row;
         let selected = entry.selected;
-        let prefix: &str = if selected { marker } else { &unselected_prefix };
+        let prefix: &str = if selected { marker } else { unselected_prefix };
         let style = if selected {
             Style::new()
                 .fg(config.colors.selected)
@@ -113,24 +179,31 @@ pub fn render_core(core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
             Style::new()
         };
 
-        let mut line = if config.ui.show_icons {
-            format!("{}{} {}", prefix, entry.icon_glyph, entry.name)
-        } else {
-            format!("{}{}", prefix, entry.name)
-        };
-        let cell_width = col_width as usize;
-        if columns > 1 && line.chars().count() > cell_width {
-            line = line.chars().take(cell_width).collect();
+        line_buf.clear();
+        line_buf.push_str(prefix);
+        if config.ui.show_icons {
+            line_buf.push_str(entry.icon_glyph);
+            line_buf.push(' ');
+        }
+        line_buf.push_str(entry.name);
+
+        if columns > 1 && line_buf.chars().count() > cell_width {
+            // Truncate at a char boundary without reallocating.
+            let keep = line_buf
+                .char_indices()
+                .nth(cell_width)
+                .map_or(line_buf.len(), |(byte_idx, _)| byte_idx);
+            line_buf.truncate(keep);
         }
         // Pad the selected row to the full cell width so its highlight bar spans
         // the row (the background style fills the trailing spaces too).
         if selected {
-            let w = line.chars().count();
+            let w = line_buf.chars().count();
             if w < cell_width {
-                line.push_str(&" ".repeat(cell_width - w));
+                line_buf.push_str(&padding_spaces[..cell_width - w]);
             }
         }
-        buf.set_string(cell_x, cell_y, &line, style);
+        buf.set_string(cell_x, cell_y, &line_buf, style);
     }
 }
 
@@ -141,13 +214,12 @@ mod tests {
     use crate::domain::desktop::DesktopEntry;
 
     fn core_with_single_app(config: Config) -> LauncherCore {
-        let app = DesktopEntry {
-            id: "firefox".into(),
-            name: "Firefox".into(),
-            icon: "firefox".into(),
-            exec: "firefox".into(),
-        };
+        let app = DesktopEntry::new("firefox", "Firefox", "firefox", "firefox");
         LauncherCore::for_test(vec![app], config)
+    }
+
+    fn cache() -> RenderCache {
+        RenderCache::new()
     }
 
     fn row_at(buf: &Buffer, y: u16, area: Rect) -> String {
@@ -166,9 +238,10 @@ mod tests {
             ..Config::default()
         };
         let mut core = core_with_single_app(cfg);
+        let mut cache = cache();
         let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
-        render_core(&mut core, area, &mut buf);
+        render_core(&mut cache, &mut core, area, &mut buf);
 
         let row = row_at(&buf, 3, area);
         assert!(
@@ -189,10 +262,11 @@ mod tests {
             ..Config::default()
         };
         let mut core = core_with_single_app(cfg);
+        let mut cache = cache();
 
         let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
-        render_core(&mut core, area, &mut buf);
+        render_core(&mut cache, &mut core, area, &mut buf);
 
         let row = row_at(&buf, 3, area);
         assert!(
@@ -213,10 +287,11 @@ mod tests {
             ..Config::default()
         };
         let mut core = core_with_single_app(cfg);
+        let mut cache = cache();
 
         let area = Rect::new(0, 0, 40, 7);
         let mut buf = Buffer::empty(area);
-        render_core(&mut core, area, &mut buf);
+        render_core(&mut cache, &mut core, area, &mut buf);
 
         let row = row_at(&buf, 3, area);
         assert!(
@@ -237,10 +312,11 @@ mod tests {
             ..Config::default()
         };
         let mut core = core_with_single_app(cfg);
+        let mut cache = cache();
 
         let area = Rect::new(0, 0, 40, 5);
         let mut buf = Buffer::empty(area);
-        render_core(&mut core, area, &mut buf);
+        render_core(&mut cache, &mut core, area, &mut buf);
 
         let row = row_at(&buf, 2, area);
         assert!(
@@ -261,10 +337,11 @@ mod tests {
             ..Config::default()
         };
         let mut core = core_with_single_app(cfg);
+        let mut cache = cache();
 
         let area = Rect::new(0, 0, 40, 5);
         let mut buf = Buffer::empty(area);
-        render_core(&mut core, area, &mut buf);
+        render_core(&mut cache, &mut core, area, &mut buf);
 
         let row = row_at(&buf, 2, area);
         assert!(

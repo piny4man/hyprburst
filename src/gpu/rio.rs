@@ -11,14 +11,18 @@ use rio_vt::ansi::CursorShape;
 use rio_vt::config::colors::term::TermColors;
 use rio_vt::config::colors::{AnsiColor, NamedColor};
 use rio_vt::crosswords::grid::Dimensions;
+use rio_vt::crosswords::grid::row::Row;
 use rio_vt::crosswords::pos::Column;
-use rio_vt::crosswords::square::ContentTag;
+use rio_vt::crosswords::square::{ContentTag, Square};
 use rio_vt::crosswords::style::StyleFlags;
 use rio_vt::crosswords::{Crosswords, Mode};
+use rio_vt::event::TerminalDamage;
 use rio_vt::event::sync::FairMutex;
 use rio_vt::event::{EventListener, Msg, RioEvent, WindowId};
 use rio_vt::performer::Machine;
 use teletypewriter::{WinsizeBuilder, create_pty_with_spawn};
+
+use crate::gpu::grid::{BgCell, CellInstance};
 
 const ROUTE_ID: usize = 1;
 const SCROLLBACK_LINES: usize = 1_000;
@@ -50,11 +54,11 @@ impl Listener {
                 (self.wake)();
             }
             RioEvent::PtyWrite(_, text) => {
-                if let Some(writer) = self
-                    .writer
-                    .lock()
-                    .expect("Rio PTY writer poisoned")
-                    .as_ref()
+                // Best-effort: a poisoned lock means a thread already panicked
+                // and the session is dying anyway (the closed flag handles
+                // teardown) — don't cascade panics through every later event.
+                if let Ok(writer) = self.writer.lock()
+                    && let Some(writer) = writer.as_ref()
                 {
                     let _ = writer.send(Msg::Input(Cow::Owned(text.into_bytes())));
                 }
@@ -149,25 +153,6 @@ fn cursor_sequence(final_byte: u8, app_cursor: bool) -> Vec<u8> {
 
 fn encode_mouse_press(col: u16, row: u16) -> Vec<u8> {
     format!("\x1b[<0;{};{}M", col as u32 + 1, row as u32 + 1).into_bytes()
-}
-
-pub(crate) struct TerminalGlyph {
-    pub col: u16,
-    pub row: u16,
-    pub ch: char,
-    pub bold: bool,
-    pub color: [f32; 3],
-}
-
-pub(crate) struct TerminalBackground {
-    pub col: u16,
-    pub row: u16,
-    pub color: [f32; 4],
-}
-
-pub(crate) struct TerminalFrame {
-    pub backgrounds: Vec<TerminalBackground>,
-    pub glyphs: Vec<TerminalGlyph>,
 }
 
 pub(crate) struct Session {
@@ -273,24 +258,46 @@ impl Session {
         }));
     }
 
-    pub fn frame(&self, default_fg: [f32; 3], default_bg: [f32; 3]) -> TerminalFrame {
-        consume_frame(&mut self.terminal.lock(), default_fg, default_bg)
+    /// Consume the terminal's damage into caller-owned buffers, reusing their
+    /// capacity across frames. Returns whether any *visible* cell changed —
+    /// wakes that only move the unrendered cursor report
+    /// `TerminalDamage::CursorOnly`/`Noop`, leave the buffers untouched, and
+    /// let the caller skip rebuilding and presenting entirely.
+    pub fn frame_into(
+        &self,
+        default_fg: [f32; 3],
+        default_bg: [f32; 3],
+        rows_scratch: &mut Vec<Row<Square>>,
+        backgrounds: &mut Vec<BgCell>,
+        glyphs: &mut Vec<CellInstance>,
+    ) -> bool {
+        let mut terminal = self.terminal.lock();
+        let paint = matches!(
+            terminal.peek_damage_event(),
+            Some(TerminalDamage::Full | TerminalDamage::Partial)
+        );
+        let changed = if paint {
+            snapshot_into(
+                &terminal,
+                default_fg,
+                default_bg,
+                rows_scratch,
+                backgrounds,
+                glyphs,
+            )
+        } else {
+            false
+        };
+        // Reset even on a skipped frame so stale flags can't make every later
+        // wake look damaged; real changes re-damage after this point.
+        terminal.reset_damage();
+        terminal.damage_event_in_flight = false;
+        changed
     }
 
     pub fn closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
-}
-
-fn consume_frame<U: EventListener>(
-    terminal: &mut Crosswords<U>,
-    default_fg: [f32; 3],
-    default_bg: [f32; 3],
-) -> TerminalFrame {
-    let frame = snapshot(terminal, default_fg, default_bg);
-    terminal.reset_damage();
-    terminal.damage_event_in_flight = false;
-    frame
 }
 
 impl Drop for Session {
@@ -300,17 +307,27 @@ impl Drop for Session {
     }
 }
 
-fn snapshot<U: EventListener>(
+/// Snapshot the visible grid into the given (already cleared) buffers. Only
+/// called when the damage gate said something visible changed, so it always
+/// reports `true`.
+fn snapshot_into<U: EventListener>(
     terminal: &Crosswords<U>,
     default_fg: [f32; 3],
     default_bg: [f32; 3],
-) -> TerminalFrame {
-    let rows = terminal.visible_rows();
-    let mut backgrounds = Vec::new();
-    let mut glyphs = Vec::new();
+    rows_scratch: &mut Vec<Row<Square>>,
+    backgrounds: &mut Vec<BgCell>,
+    glyphs: &mut Vec<CellInstance>,
+) -> bool {
+    // Reused across frames via `fill_visible_rows` instead of `visible_rows()`,
+    // which allocates a fresh Vec per call.
+    rows_scratch.clear();
+    terminal.fill_visible_rows(rows_scratch);
+    backgrounds.clear();
+    glyphs.clear();
 
-    for (row, cells) in rows.iter().enumerate() {
-        for col in 0..terminal.columns() {
+    let cols = terminal.columns();
+    for (row, cells) in rows_scratch.iter().enumerate() {
+        for col in 0..cols {
             let square = cells[Column(col)];
             if square.content_tag() != ContentTag::Codepoint {
                 let rgb = match square.content_tag() {
@@ -318,7 +335,7 @@ fn snapshot<U: EventListener>(
                     ContentTag::BgRgb => rgb_norm(square.bg_rgb()),
                     ContentTag::Codepoint => unreachable!(),
                 };
-                backgrounds.push(TerminalBackground {
+                backgrounds.push(BgCell {
                     col: col as u16,
                     row: row as u16,
                     color: [rgb[0], rgb[1], rgb[2], 1.0],
@@ -338,7 +355,7 @@ fn snapshot<U: EventListener>(
                 !inverse && matches!(style.bg, AnsiColor::Named(NamedColor::Background));
             if !bg_is_default {
                 let bg = ansi_rgb(bg, terminal.colors(), default_fg, default_bg);
-                backgrounds.push(TerminalBackground {
+                backgrounds.push(BgCell {
                     col: col as u16,
                     row: row as u16,
                     color: [bg[0], bg[1], bg[2], 1.0],
@@ -347,7 +364,7 @@ fn snapshot<U: EventListener>(
 
             let ch = square.c();
             if ch != '\0' && ch != ' ' && !style.flags.contains(StyleFlags::HIDDEN) {
-                glyphs.push(TerminalGlyph {
+                glyphs.push(CellInstance {
                     col: col as u16,
                     row: row as u16,
                     ch,
@@ -358,10 +375,7 @@ fn snapshot<U: EventListener>(
         }
     }
 
-    TerminalFrame {
-        backgrounds,
-        glyphs,
-    }
+    true
 }
 
 fn ansi_rgb(
@@ -504,11 +518,30 @@ mod tests {
         parser.advance(&mut terminal, b"\x1b[31mhyprburst\x1b[0m");
         terminal.damage_event_in_flight = true;
 
-        let frame = consume_frame(&mut terminal, [1.0; 3], [0.0; 3]);
-        let text: String = frame.glyphs.iter().map(|cell| cell.ch).collect();
+        let mut rows = Vec::new();
+        let mut backgrounds: Vec<BgCell> = Vec::new();
+        let mut glyphs: Vec<CellInstance> = Vec::new();
+        let changed = snapshot_into(
+            &terminal,
+            [1.0; 3],
+            [0.0; 3],
+            &mut rows,
+            &mut backgrounds,
+            &mut glyphs,
+        );
+        assert!(changed, "freshly damaged content must snapshot");
+        let text: String = glyphs.iter().map(|cell| cell.ch).collect();
         assert_eq!(text, "hyprburst");
-        assert_eq!(frame.glyphs[0].color, indexed_rgb(1));
-        assert!(!terminal.damage_event_in_flight);
+        assert_eq!(glyphs[0].color, indexed_rgb(1));
+
+        // frame_into resets damage after consuming a painted frame; a wake
+        // arriving afterwards reports no visible change, so it would skip the
+        // rebuild and present entirely.
+        terminal.reset_damage();
+        assert!(matches!(
+            terminal.peek_damage_event(),
+            None | Some(TerminalDamage::CursorOnly)
+        ));
 
         terminal.resize(GridSize {
             cols: 10,

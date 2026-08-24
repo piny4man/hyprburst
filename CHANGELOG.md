@@ -5,6 +5,44 @@ All notable changes to Hyprburst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-23
+
+### Added
+
+- Application discovery follows the XDG basedir spec: apps are found under
+  every `$XDG_DATA_DIRS` entry (Flatpak export directories included), and the
+  highest-precedence `.desktop` copy wins per desktop-id — a user override
+  (including a `NoDisplay` one) now hides the system entry instead of showing
+  both.
+
+### Changed
+
+- The windowed frontends repaint only when something changed: an idle launcher
+  no longer rebuilds buffers, re-uploads vertices, or presents frames.
+- The Rio frontend consumes VT damage — PTY wakes without visible changes skip
+  rendering entirely, and snapshots reuse their buffers across frames.
+- Search ranking precomputes lowercase names and icon glyphs at discovery;
+  keystroke filtering allocates once per query instead of per comparison.
+- Font resolution costs one `fc-match` spawn in the common case, and corrupt
+  font candidates fall through to the next instead of failing resolution.
+- `[font] size` is validated to 6–128 px (glyph rasterization feeds
+  fixed-size pixel buffers).
+- The inline TUI drains queued input per wake (paste/key-repeat bursts redraw
+  once) and idles without redrawing at ~60 fps.
+- Glyph atlas slots are keyed by character only, halving atlas consumption.
+- Removed the unused themed-icon file resolvers and their latent path-traversal
+  surface; glyph fallback remains the shipped icon rendering.
+
+### Fixed
+
+- Startup crash when a config color hex string contained multibyte UTF-8.
+- Driver out-of-bounds reads: OpenGL unpack alignment is set before texture
+  uploads, cell-metric products are overflow-checked, and grid cell counts
+  stay within u16 index math.
+- GL object creation, shader compile/link failures, buffer swaps, PTY writer
+  access, and terminal draw errors now exit with clear messages instead of
+  panicking or silently drawing nothing.
+
 ## [0.6.1] - 2026-07-31
 
 ### Added
