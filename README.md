@@ -72,7 +72,7 @@ hyprburst/
 - **OS** — Linux with [Hyprland](https://hyprland.org/) (a Wayland session). Hyprburst opens its own GPU window and dispatches launches through `hyprctl`, so it expects a running Hyprland session.
 - **OpenGL** — the launcher window is rendered with OpenGL via your GPU driver (Mesa or vendor). Virtually every Hyprland-capable machine already has this.
 - **Hyprland 0.55+ recommended** — use the Lua bind snippet and configure placement/opacity in `~/.config/hyprburst/config.toml`. Legacy Hyprland 0.48–0.54 / `hyprland.conf` setups can use the shipped hyprlang `hyprburst.conf` with unified `windowrule` syntax.
-- **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. It auto-picks an installed [Nerd Font](https://www.nerdfonts.com/) (a *Mono* variant preferred); if none is installed, the icons show as tofu squares — install one (e.g. `JetBrainsMono Nerd Font`) or set `[font] path` / `[font] family` / `$HYPRBURST_FONT` to one.
+- **Nerd Font (optional)** — hyprburst renders entry icons as [Nerd Font](https://www.nerdfonts.com/) glyphs. Both GPU frontends keep your requested text font and use an installed Nerd Font for missing icons (a *Mono* variant preferred). Icons fit within the text cell; when no font provides an icon, a generic four-tile app symbol appears instead. `hyprburst tui` uses the hosting terminal's font and fallback settings.
 
 ## Install
 
@@ -228,7 +228,7 @@ The launcher window and cell font are configured under `[window]` and `[font]` i
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `font.path` | string | unset | Explicit `.ttf`/`.otf` path for the cell font. Wins over `$HYPRBURST_FONT`, `[font] family`, and fontconfig. If icons show as tofu, point this at a *Nerd Font Mono* file. |
+| `font.path` | string | unset | Explicit `.ttf`/`.otf` path for the primary text font. Wins over `$HYPRBURST_FONT`, `[font] family`, and fontconfig; missing icons still use fallback fonts. |
 | `font.family` | string | unset | fontconfig family used after `path` and `$HYPRBURST_FONT`. A shared Swatches theme fills this when unset. Ignored by `hyprburst tui` (the hosting terminal owns that font). |
 | `font.size` | float | `20.0` | Logical font height in pixels (before DPI scaling). The cell size is derived from the font's metrics at this size. Bump it up if text looks too small. |
 
@@ -255,7 +255,7 @@ Two sections cover everything about how hyprburst renders on screen: `[layout]` 
 | `ui.banner` | string | built-in ASCII "hyprburst" | Banner content, used when `show_banner = true`. Multi-line TOML string (`"""..."""`). An empty string also hides the banner. |
 | `ui.prompt` | string | `"> "` | Printed before the search cursor. |
 | `ui.page_size` | integer | `10` | Entries per page (PageUp/PageDown step). Must be `>= 1`. |
-| `ui.show_icons` | bool | `true` | Draw a Nerd Font glyph before each app. Disable if your font lacks Nerd glyphs. |
+| `ui.show_icons` | bool | `true` | Draw an icon before each app. GPU frontends use font fallback or a generic app symbol when the text font lacks Nerd glyphs. |
 | `ui.selected_marker` | string | `"> "` | Prefix drawn on the selected row. Empty string falls back to the default. |
 | `ui.cursor_char` | string | `"█"` | Single-character cursor glyph after the prompt. Non-single-grapheme values fall back to the default. |
 | `ui.show_cursor` | bool | `true` | Draw the cursor glyph at all. |
@@ -405,7 +405,7 @@ Compare first presentation with `hyprburst --measure` (Rio default) and `hyprbur
 
 ## Troubleshooting
 
-**Icons show as tofu squares (□).** No Nerd Font is installed for hyprburst to auto-pick. Install a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font` (the *Mono* variant keeps icons one cell wide), or point `[font] path` / `[font] family` (or `$HYPRBURST_FONT`) at one, or set `ui.show_icons = false` to drop icons entirely. `hyprburst tui` uses the terminal's font, so a theme family will not fix tofu there.
+**Icons look generic.** Both GPU frontends use a four-tile app symbol when no resolved font provides the requested icon. Install a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font` and reopen hyprburst to get application-specific icons; your configured text family can stay unchanged. Set `ui.show_icons = false` to hide icons entirely. If **icons show as tofu squares (□)** in `hyprburst tui`, configure a Nerd Font or font fallback in the hosting terminal; a shared theme family does not control its font.
 
 **Text is too small.** Raise `[font] size` (default `20.0`).
 

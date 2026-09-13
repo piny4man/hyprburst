@@ -1,8 +1,9 @@
 //! Monospace-font resolution for the GUI launcher.
 //!
-//! The windowed launcher rasterizes its own glyphs from a *single* font, so that
-//! font must carry both the text glyphs and the launcher's Nerd Font icon glyphs.
-//! (The `tui` fallback gets icons from the *hosting terminal's* font instead.)
+//! Both GPU frontends retain the requested primary text font and search fallback
+//! fonts for missing glyphs. Private-use icons are fitted to the primary cell;
+//! without an icon font, a procedural four-tile app symbol avoids missing-glyph
+//! boxes. The `tui` fallback still uses the hosting terminal's font.
 //! Resolution order, most specific first:
 //!
 //! 1. an explicit path from `[font] path` in the config,
@@ -20,7 +21,110 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use ab_glyph::FontVec;
+use ab_glyph::{Font, FontVec, PxScale};
+
+/// Immutable font selection for one GUI session; text geometry always uses primary.
+pub(crate) struct FontSet {
+    pub(crate) primary: FontVec,
+    fallbacks: Vec<FontVec>,
+}
+
+impl FontSet {
+    fn glyph_font(&self, ch: char) -> Option<&FontVec> {
+        // Missing glyphs must never be handed to the rasterizer as glyph zero.
+        std::iter::once(&self.primary)
+            .chain(&self.fallbacks)
+            .find(|font| font.glyph_id(ch).0 != 0)
+    }
+
+    pub(crate) fn coverage(
+        &self,
+        ch: char,
+        size: (u32, u32),
+        scale: PxScale,
+        ascent: f32,
+    ) -> Vec<u8> {
+        let (cw, height) = size;
+        let mut coverage = vec![0; cw.checked_mul(height).expect("cell size overflow") as usize];
+        let icon = is_icon(ch);
+        let Some(font) = self.glyph_font(ch) else {
+            if icon {
+                // A font-independent, generic app badge: four filled tiles, not
+                // a .notdef box. This also works with symbol-only primary fonts.
+                let side = cw.min(height).saturating_sub(2);
+                let tile = side / 3;
+                let left = (cw - side) / 2;
+                let top = (height - side) / 2;
+                for y in 0..side {
+                    for x in 0..side {
+                        if (x < tile || x >= side - tile) && (y < tile || y >= side - tile) {
+                            coverage[((top + y) * cw + left + x) as usize] = 255;
+                        }
+                    }
+                }
+            }
+            return coverage;
+        };
+        let mut glyph = font
+            .glyph_id(ch)
+            .with_scale_and_position(scale, ab_glyph::point(0.0, ascent));
+        if icon {
+            let Some(raw) = font.outline(glyph.id) else {
+                return coverage;
+            };
+            // Use unscaled ink bounds, not the fallback's advance or line height:
+            // Nerd Font faces may have very different metrics from the text face.
+            // Fit both up and down, preserving aspect ratio. Reserve edge pixels
+            // plus rounding slack for the rasterizer's outward-rounded bounds.
+            let fit = (cw.saturating_sub(3) as f32 / raw.bounds.width())
+                .min(height.saturating_sub(3) as f32 / raw.bounds.height().abs());
+            glyph.scale = PxScale::from(fit * font.height_unscaled());
+            glyph.position = ab_glyph::point(0.0, 0.0);
+        }
+        if let Some(outline) = font.outline_glyph(glyph) {
+            let bounds = outline.px_bounds();
+            let (origin_x, origin_y) = if icon {
+                (
+                    ((cw as f32 - bounds.width()) / 2.0).floor() as i32,
+                    ((height as f32 - bounds.height()) / 2.0).floor() as i32,
+                )
+            } else {
+                (bounds.min.x as i32, bounds.min.y as i32)
+            };
+            outline.draw(|gx, gy, c| {
+                let x = gx as i32 + origin_x;
+                let y = gy as i32 + origin_y;
+                if x >= 0 && (x as u32) < cw && y >= 0 && (y as u32) < height {
+                    coverage[y as usize * cw as usize + x as usize] = (c * 255.0) as u8;
+                }
+            });
+        }
+        coverage
+    }
+}
+
+/// Nerd Font icons occupy Unicode's private-use areas (including supplementary).
+fn is_icon(ch: char) -> bool {
+    matches!(ch as u32, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd)
+}
+
+/// Resolve once per window. Keeping the font set immutable means atlas keys can
+/// remain characters: a given character always selects the same face and glyph.
+pub(crate) fn resolve_fonts(config_path: Option<&str>, family: Option<&str>) -> Option<FontSet> {
+    fonts_from_paths(candidate_paths(config_path, family))
+}
+
+fn fonts_from_paths(paths: Vec<PathBuf>) -> Option<FontSet> {
+    let mut seen = std::collections::HashSet::new();
+    let mut fonts = paths
+        .into_iter()
+        .filter(|p| seen.insert(p.clone()))
+        .filter_map(|p| FontVec::try_from_vec(std::fs::read(p).ok()?).ok());
+    Some(FontSet {
+        primary: fonts.next()?,
+        fallbacks: fonts.collect(),
+    })
+}
 
 /// The environment variable that pins the cell font, overriding `fc-match`.
 const FONT_ENV: &str = "HYPRBURST_FONT";
@@ -183,6 +287,151 @@ fn pick_nerd_font(list: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_fonts() -> FontSet {
+        FontSet {
+            primary: FontVec::try_from_vec(
+                include_bytes!("../../tests/fixtures/fonts/primary.ttf").to_vec(),
+            )
+            .unwrap(),
+            fallbacks: vec![
+                FontVec::try_from_vec(
+                    include_bytes!("../../tests/fixtures/fonts/icons.ttf").to_vec(),
+                )
+                .unwrap(),
+            ],
+        }
+    }
+
+    #[test]
+    fn missing_launcher_icon_uses_fallback_without_replacing_text() {
+        let fonts = fixture_fonts();
+        let icon = crate::domain::icon::fallback_glyph("firefox", "Firefox")
+            .chars()
+            .next()
+            .unwrap();
+        assert_eq!(fonts.primary.glyph_id(icon).0, 0);
+        assert_ne!(fonts.fallbacks[0].glyph_id(icon).0, 0);
+        assert!(std::ptr::eq(fonts.glyph_font('A').unwrap(), &fonts.primary));
+        assert!(std::ptr::eq(
+            fonts.glyph_font(icon).expect("fallback icon font"),
+            &fonts.fallbacks[0]
+        ));
+    }
+
+    #[test]
+    fn icon_coverage_fits_cell_and_cache_reuses_original_character_at_each_scale() {
+        use crate::gpu::grid::{Atlas, CellMetrics, GlyphKey};
+        let fonts = fixture_fonts();
+        for factor in [1.0, 1.5, 2.0] {
+            let (w, h) = ((12.0 * factor) as u32, (20.0 * factor) as u32);
+            let mut atlas = Atlas::new((256, 256), CellMetrics::new(w, h));
+            let key = GlyphKey::new('\u{f269}');
+            let slot = atlas.get_or_insert(key).unwrap();
+            assert!(slot.newly_inserted);
+            let pixels = fonts.coverage(
+                '\u{f269}',
+                (w, h),
+                PxScale::from(20.0 * factor),
+                16.0 * factor,
+            );
+            let points: Vec<_> = pixels
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| **c > 0)
+                .map(|(i, _)| (i as u32 % w, i as u32 / w))
+                .collect();
+            assert!(!points.is_empty(), "icon must be visible");
+            let left = points.iter().map(|p| p.0).min().unwrap();
+            let right = points.iter().map(|p| p.0).max().unwrap();
+            let top = points.iter().map(|p| p.1).min().unwrap();
+            let bottom = points.iter().map(|p| p.1).max().unwrap();
+            assert!(
+                left > 0 && right < w - 1 && top > 0 && bottom < h - 1,
+                "icon must fit without clipping"
+            );
+            assert!((left as i32 - (w - 1 - right) as i32).abs() <= 1);
+            assert!((top as i32 - (h - 1 - bottom) as i32).abs() <= 1);
+            let cached = atlas.get_or_insert(key).unwrap();
+            assert!(!cached.newly_inserted);
+            assert_eq!(cached.px, slot.px);
+            assert_ne!(atlas.get_or_insert(GlyphKey::new('A')).unwrap().px, slot.px);
+        }
+    }
+
+    #[test]
+    fn no_icon_font_draws_deliberate_generic_symbol_not_tofu() {
+        let mut fonts = fixture_fonts();
+        fonts.fallbacks.clear();
+        for icon in ['\u{f269}', '\u{f120}', '\u{f07b}', '\u{f0001}'] {
+            assert!(
+                fonts
+                    .coverage(icon, (12, 20), PxScale::from(20.0), 16.0)
+                    .iter()
+                    .any(|c| *c > 0)
+            );
+        }
+        assert!(
+            fonts
+                .coverage(' ', (12, 20), PxScale::from(20.0), 16.0)
+                .iter()
+                .all(|c| *c == 0)
+        );
+    }
+
+    #[test]
+    fn small_icon_outlines_are_enlarged_to_remain_legible() {
+        let fonts = fixture_fonts();
+        let pixels = fonts.coverage('\u{f269}', (12, 20), PxScale::from(1.0), 16.0);
+        let columns: Vec<_> = pixels
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c > 0)
+            .map(|(i, _)| i % 12)
+            .collect();
+        assert!(columns.iter().max().unwrap() - columns.iter().min().unwrap() >= 7);
+    }
+
+    #[test]
+    fn loading_keeps_first_parseable_font_and_deduplicates_fallbacks() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let primary = root.join("tests/fixtures/fonts/primary.ttf");
+        let icons = root.join("tests/fixtures/fonts/icons.ttf");
+        let fonts = fonts_from_paths(vec![
+            root.join("no-such-font.ttf"),
+            root.join("Cargo.toml"),
+            primary.clone(),
+            icons.clone(),
+            primary,
+            icons,
+        ])
+        .unwrap();
+        assert_ne!(fonts.primary.glyph_id('M').0, 0);
+        assert_eq!(fonts.primary.glyph_id('\u{f269}').0, 0);
+        assert_eq!(fonts.fallbacks.len(), 1);
+        assert_ne!(
+            fonts.glyph_font('\u{f269}').unwrap().glyph_id('\u{f269}').0,
+            0
+        );
+    }
+
+    #[test]
+    fn primary_icons_win_and_fallbacks_do_not_change_text_coverage() {
+        let mut fonts = fixture_fonts();
+        let text = fonts.coverage('A', (12, 20), PxScale::from(20.0), 16.0);
+        assert!(text.iter().any(|c| *c > 0));
+        fonts.fallbacks.clear();
+        assert_eq!(
+            fonts.coverage('A', (12, 20), PxScale::from(20.0), 16.0),
+            text
+        );
+        let mut fonts = fixture_fonts();
+        std::mem::swap(&mut fonts.primary, &mut fonts.fallbacks[0]);
+        assert!(std::ptr::eq(
+            fonts.glyph_font('\u{f269}').unwrap(),
+            &fonts.primary
+        ));
+    }
 
     #[test]
     fn family_is_nerd_detects_nerd_fonts() {
