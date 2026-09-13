@@ -34,7 +34,7 @@ enum Command {
     BenchStartup,
     Rio { measure: bool },
     Native { measure: bool },
-    Tui,
+    Tui { gpu_host: bool },
     Help,
     Unknown(String),
 }
@@ -50,7 +50,9 @@ fn parse_command(args: &[String]) -> Command {
         Some("native") => Command::Native {
             measure: args.iter().any(|arg| arg == "--measure"),
         },
-        Some("tui") => Command::Tui,
+        Some("tui") => Command::Tui {
+            gpu_host: args.iter().any(|arg| arg == "--gpu-host"),
+        },
         Some("help" | "--help" | "-h") => Command::Help,
         Some(other) => Command::Unknown(other.to_string()),
     }
@@ -85,11 +87,23 @@ fn bench_startup() -> io::Result<()> {
     Ok(())
 }
 
+/// Adapt only the base palette for Rio's internal child; external terminals
+/// receive the resolved config unchanged.
+fn tui_config(mut config: Config, gpu_host: bool) -> Config {
+    if gpu_host {
+        // Internal Rio child mode: ANSI default colors are resolved by the
+        // parent, preserving its base panel opacity. Keep selection/accent
+        // colors explicit, just as in the direct native renderer.
+        config.colors.foreground = ratatui::style::Color::Reset;
+        config.colors.background = ratatui::style::Color::Reset;
+    }
+    config
+}
+
 /// Run the crossterm TUI inline in the current terminal — the fallback for
 /// SSH / no-GPU sessions where the windowed launcher can't open.
-fn run_tui() -> io::Result<()> {
-    let config = load_config();
-
+fn run_tui(gpu_host: bool) -> io::Result<()> {
+    let config = tui_config(load_config(), gpu_host);
     let mut terminal = terminal::init()?;
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -166,7 +180,7 @@ fn main() -> ExitCode {
         Command::BenchStartup => io_to_exit(bench_startup()),
         Command::Rio { measure } => run_rio(measure, start),
         Command::Native { measure } => run_window(measure, start),
-        Command::Tui => io_to_exit(run_tui()),
+        Command::Tui { gpu_host } => io_to_exit(run_tui(gpu_host)),
         Command::Help => {
             print!("{}", HELP);
             ExitCode::SUCCESS
@@ -206,6 +220,30 @@ mod tests {
             parse_command(&args(&["native"])),
             Command::Native { measure: false }
         );
+    }
+
+    #[test]
+    fn gpu_host_tui_is_distinct_from_external_terminal() {
+        assert_eq!(
+            parse_command(&args(&["tui", "--gpu-host"])),
+            Command::Tui { gpu_host: true }
+        );
+        assert_eq!(
+            parse_command(&args(&["tui"])),
+            Command::Tui { gpu_host: false }
+        );
+    }
+
+    #[test]
+    fn only_gpu_host_defers_base_colors_and_keeps_selection_explicit() {
+        let config = Config::from_toml_str(
+            "[colors]\nforeground = \"#123456\"\nbackground = \"#654321\"\nselected = \"red\"\nselected_bg = \"blue\"",
+        ).unwrap();
+        assert_eq!(tui_config(config.clone(), false), config);
+        let mut expected = config.clone();
+        expected.colors.foreground = ratatui::style::Color::Reset;
+        expected.colors.background = ratatui::style::Color::Reset;
+        assert_eq!(tui_config(config, true), expected);
     }
 
     #[test]

@@ -310,7 +310,9 @@ The `[window]` and `[font]` sections are documented in [Window and font](#window
 
 The six semantic roles map as: **background** → `colors.background`, **foreground** → `colors.foreground`, **accent** → `colors.prompt` and `colors.banner`, **muted** → `colors.empty`, **selection_background** → `colors.selected_bg`, **selection_foreground** → `colors.selected`, **font.family** → `font.family`. Explicit `[colors]` / `[font]` fields always win, even when they equal an old default.
 
-A missing or invalid `theme_file` is reported on stderr and ignored. Hyprburst still launches, keeping valid app overrides and built-in values for everything else. The Rio parent and `hyprburst tui` child each load this file independently, so they pick the same theme. `hyprburst tui` (including that Rio child PTY) uses the resolved colors but **not** the theme family — glyphs there come from the hosting terminal.
+A missing or invalid `theme_file` is reported on stderr and ignored. Hyprburst still launches, keeping valid app overrides and built-in values for everything else. The Rio parent and its TUI child each load this file independently, so they pick the same theme. External `hyprburst tui` applies the resolved foreground to ordinary text and background to the entire launcher area, while preserving selection/accent colors. It does **not** apply the theme family—the hosting terminal owns its fonts. Rio's internal child leaves base colors at ANSI defaults so its GPU parent owns the base palette and transparent background panel, just like the native frontend.
+
+Without a shared theme (or if it fails to load), the external TUI uses the built-in palette plus explicit overrides. This intentionally replaces its previous reliance on terminal defaults for ordinary text and blank areas. To retain terminal-owned base colors, set `[colors] foreground = "reset"` and `background = "reset"`. Each `reset` independently means the hosting terminal's corresponding default, including when explicitly used for selection colors; it does not inherit the theme's base color. External terminals own opacity/transparency; `[window]` settings apply only to GPU windows.
 
 The remaining section controls colors:
 
@@ -321,8 +323,8 @@ The remaining section controls colors:
 | `colors.selected` | color | `#f2d5ff` | Text of the highlighted entry. |
 | `colors.selected_bg` | color | `#3a2e5a` | Highlight bar drawn behind the selected row. |
 | `colors.empty` | color | `#9a8cb5` | "No matches" message color. |
-| `colors.background` | color | `#1a1b26` | Window background — painted opaque when `window.transparent = false`, and as the dimming panel (at `window.opacity`) when `transparent = true`. |
-| `colors.foreground` | color | `#c8cce0` | Default text color for unstyled launcher text (the Reset color). |
+| `colors.background` | color | `#1a1b26` | GPU window background/dimming panel; base background throughout the external TUI. |
+| `colors.foreground` | color | `#c8cce0` | Base color for ordinary launcher text in every frontend. |
 
 ### Color values
 

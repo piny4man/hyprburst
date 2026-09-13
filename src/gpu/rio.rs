@@ -36,7 +36,9 @@ struct ChildSpec {
 fn child_spec(executable: &Path) -> ChildSpec {
     ChildSpec {
         program: executable.to_path_buf(),
-        args: vec!["tui".to_string()],
+        // Leave base cells at ANSI defaults so the GPU parent retains control
+        // of text color and the transparent/opaque background panel.
+        args: vec!["tui".to_string(), "--gpu-host".to_string()],
     }
 }
 
@@ -496,7 +498,7 @@ mod tests {
         let spec = child_spec(Path::new("/tmp/hypr burst"));
 
         assert_eq!(spec.program, Path::new("/tmp/hypr burst"));
-        assert_eq!(spec.args, ["tui"]);
+        assert_eq!(spec.args, ["tui", "--gpu-host"]);
     }
 
     #[test]
