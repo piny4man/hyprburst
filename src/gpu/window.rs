@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
+use ab_glyph::{Font, PxScale, ScaleFont};
 use glow::HasContext;
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextAttributesBuilder, PossiblyCurrentContext};
@@ -47,6 +47,7 @@ use rio_vt::crosswords::square::Square;
 use crate::bench;
 use crate::domain::config::Config;
 use crate::domain::launcher_core::{LauncherAction, LauncherCore};
+use crate::gpu::font::{FontSet, resolve_fonts};
 use crate::gpu::grid::{
     Atlas, BgCell, CellInstance, CellMetrics, GlyphKey, GridSize, cell_at_pixel, cell_rect,
     grid_size,
@@ -79,18 +80,8 @@ pub fn run(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = match crate::gpu::font::resolve_font(
-        config.font.path.as_deref(),
-        config.font.family.as_deref(),
-    ) {
-        Some(font) => font,
-        None => {
-            return Err(
-                "no monospace font found; set [font] path in config or $HYPRBURST_FONT to a .ttf/.otf path"
-                    .into(),
-            );
-        }
-    };
+    let font = resolve_fonts(config.font.path.as_deref(), config.font.family.as_deref())
+        .ok_or("no monospace font found; set [font] path or $HYPRBURST_FONT to a .ttf/.otf path")?;
 
     let event_loop = EventLoop::<()>::with_user_event().build().map_err(|err| {
         format!("cannot create event loop ({err}) — is a Wayland display available?")
@@ -111,18 +102,8 @@ pub fn run_rio(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = match crate::gpu::font::resolve_font(
-        config.font.path.as_deref(),
-        config.font.family.as_deref(),
-    ) {
-        Some(font) => font,
-        None => {
-            return Err(
-                "no monospace font found; set [font] path in config or $HYPRBURST_FONT to a .ttf/.otf path"
-                    .into(),
-            );
-        }
-    };
+    let font = resolve_fonts(config.font.path.as_deref(), config.font.family.as_deref())
+        .ok_or("no monospace font found; set [font] path or $HYPRBURST_FONT to a .ttf/.otf path")?;
     let executable = std::env::current_exe()?;
     let event_loop = EventLoop::<()>::with_user_event().build().map_err(|err| {
         format!("cannot create event loop ({err}) — is a Wayland display available?")
@@ -150,7 +131,7 @@ enum Frontend {
 /// mutation happens on the main thread.
 struct App {
     start: Instant,
-    font: FontVec,
+    font: FontSet,
     frontend: Frontend,
     gl: Option<GlState>,
     /// Pixel size of one monospace cell, derived from the font + DPI once the
@@ -195,14 +176,14 @@ struct App {
 }
 
 impl App {
-    fn new(start: Instant, font: FontVec, config: Config) -> Self {
+    fn new(start: Instant, font: FontSet, config: Config) -> Self {
         let frontend = Frontend::Launcher(Box::new(LauncherCore::new(config.clone())));
         Self::with_frontend(start, font, config, frontend)
     }
 
     fn new_rio(
         start: Instant,
-        font: FontVec,
+        font: FontSet,
         config: Config,
         executable: PathBuf,
         wake: Arc<dyn Fn() + Send + Sync>,
@@ -215,7 +196,7 @@ impl App {
         Self::with_frontend(start, font, config, frontend)
     }
 
-    fn with_frontend(start: Instant, font: FontVec, config: Config, frontend: Frontend) -> Self {
+    fn with_frontend(start: Instant, font: FontSet, config: Config, frontend: Frontend) -> Self {
         let fg = rgb_norm(color_rgb(config.colors.foreground));
         let (br, bg_, bb) = color_rgb(config.colors.background);
         let bg_norm = [br as f32 / 255.0, bg_ as f32 / 255.0, bb as f32 / 255.0];
@@ -276,7 +257,8 @@ struct FontMetrics {
 /// DPI `scale_factor`: cell width = the monospace advance, cell height = ascent −
 /// descent + line gap. Glyphs are rasterized at the full `px` size (no shrink) so
 /// box-drawing fills the cell and the banner art connects.
-fn font_metrics(font: &FontVec, scale_factor: f64, base_px: f32) -> FontMetrics {
+fn font_metrics(fonts: &FontSet, scale_factor: f64, base_px: f32) -> FontMetrics {
+    let font = &fonts.primary;
     let px = (base_px as f64 * scale_factor.max(1.0)) as f32;
     let scaled = font.as_scaled(PxScale::from(px));
     let cell_w = scaled.h_advance(font.glyph_id('M')).ceil().max(1.0) as u32;
@@ -672,7 +654,7 @@ impl GlState {
     fn new(
         event_loop: &ActiveEventLoop,
         window_attributes: WindowAttributes,
-        font: &FontVec,
+        font: &FontSet,
         font_px: f32,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let template = ConfigTemplateBuilder::new()
@@ -893,7 +875,7 @@ impl CellRenderer {
     fn ensure_glyph(
         &mut self,
         gl: &glow::Context,
-        font: &FontVec,
+        font: &FontSet,
         ch: char,
     ) -> Option<(f32, f32, f32, f32)> {
         let slot = self.atlas.get_or_insert(GlyphKey::new(ch))?;
@@ -904,31 +886,9 @@ impl CellRenderer {
     }
 
     /// Rasterize `ch` into the atlas tile at pixel origin `px` via `ab_glyph`.
-    fn rasterize_into(&self, gl: &glow::Context, font: &FontVec, ch: char, px: (u32, u32)) {
+    fn rasterize_into(&self, gl: &glow::Context, font: &FontSet, ch: char, px: (u32, u32)) {
         let (cw, ch_px) = (self.cell.cell_w, self.cell.cell_h);
-        // Checked: this product is both the coverage buffer length and the
-        // upload's declared pixel count; a metrics bug must not wrap it into
-        // an undersized slice for GL to read past.
-        let Some(buf_len) = cw.checked_mul(ch_px) else {
-            return;
-        };
-        let mut coverage = vec![0u8; buf_len as usize];
-        let glyph = font
-            .glyph_id(ch)
-            .with_scale_and_position(self.scale, ab_glyph::point(0.0, self.ascent));
-        if let Some(outline) = font.outline_glyph(glyph) {
-            let bounds = outline.px_bounds();
-            outline.draw(|gx, gy, c| {
-                let x = gx as i32 + bounds.min.x as i32;
-                let y = gy as i32 + bounds.min.y as i32;
-                if x >= 0 && (x as u32) < cw && y >= 0 && (y as u32) < ch_px {
-                    // usize math: no u32 intermediate can overflow here since
-                    // y < ch_px and x < cw and cw × ch_px fits (checked above).
-                    let idx = y as usize * cw as usize + x as usize;
-                    coverage[idx] = (c * 255.0) as u8;
-                }
-            });
-        }
+        let coverage = font.coverage(ch, (cw, ch_px), self.scale, self.ascent);
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
             gl.tex_sub_image_2d(
@@ -964,7 +924,7 @@ impl CellRenderer {
     unsafe fn draw(
         &mut self,
         gl: &glow::Context,
-        font: &FontVec,
+        font: &FontSet,
         width: u32,
         height: u32,
         bgs: &[BgCell],

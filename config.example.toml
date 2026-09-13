@@ -70,13 +70,13 @@
 # with `override`; hyprburst also uses it for the transparent background panel.
 # opacity = 0.85
 
-# The cell font the window rasterizes glyphs from.
+# The primary text font used by both GPU frontends.
 [font]
 # Explicit .ttf/.otf path. When unset, hyprburst auto-picks an installed Nerd
 # Font (so the entry icons render), then falls back to the system monospace.
 # Resolution order: path, $HYPRBURST_FONT, family (config or shared theme),
-# fontconfig, hardcoded paths. If your icons show as tofu squares, set this to a
-# *Nerd Font Mono* file (the "Mono" variant keeps icons one cell wide).
+# fontconfig, hardcoded paths. Missing icons use fallback fonts without changing
+# the text family; if none provides the icon, a generic four-tile symbol is drawn.
 # path = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
 
 # fontconfig family name, used after path and $HYPRBURST_FONT. A shared theme
@@ -138,8 +138,8 @@
 # Number of entries shown per page (PageUp/PageDown step size). Must be >= 1.
 # page_size = 10
 
-# Show Nerd Font icons before each app name. Set to false if your font lacks
-# Nerd glyphs to avoid tofu squares.
+# Show icons before each app name. GPU frontends fall back to an icon font or a
+# generic app symbol; the external TUI depends on its hosting terminal's font.
 # show_icons = true
 
 # Prefix drawn on the selected row. Unselected rows get matching spaces so
