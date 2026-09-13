@@ -7,6 +7,30 @@
 # contains [terminal] is rejected; move `terminal.class` to `window.app_id` and
 # delete the rest.
 
+# Optional shared Swatches theme. Omitted (the default) keeps Hyprburst's
+# built-in colors and font resolution unchanged.
+#
+# Relative theme_file paths resolve against this config's directory; ~/ expands
+# to $HOME. The theme is loaded once at launch — reopen the launcher to apply
+# edits. A missing or invalid theme is reported on stderr and ignored; Hyprburst
+# still opens, using built-in defaults plus any explicit [colors]/[font] fields.
+#
+# Mapping from the six Swatches roles:
+#   background            → colors.background
+#   foreground            → colors.foreground
+#   accent                → colors.prompt and colors.banner
+#   muted                 → colors.empty
+#   selection_background  → colors.selected_bg
+#   selection_foreground  → colors.selected
+#   font.family           → font.family (after [font] path and $HYPRBURST_FONT)
+#
+# Explicit [colors] / [font] keys always win over the theme. `hyprburst tui`
+# (and the Rio child's PTY) uses the resolved colors but not the theme family:
+# that fallback's glyphs come from the hosting terminal.
+[appearance]
+# theme_file = "theme.toml"
+# theme_file = "~/themes/swatches.toml"
+
 # Colors accept either a named color or a 6-digit hex string ("#RRGGBB").
 #
 # Named colors (case-insensitive, dashes/underscores ignored):
@@ -49,10 +73,15 @@
 # The cell font the window rasterizes glyphs from.
 [font]
 # Explicit .ttf/.otf path. When unset, hyprburst auto-picks an installed Nerd
-# Font (so the entry icons render), then falls back to the system monospace, then
-# $HYPRBURST_FONT overrides everything. If your icons show as tofu squares, set
-# this to a *Nerd Font Mono* file (the "Mono" variant keeps icons one cell wide).
+# Font (so the entry icons render), then falls back to the system monospace.
+# Resolution order: path, $HYPRBURST_FONT, family (config or shared theme),
+# fontconfig, hardcoded paths. If your icons show as tofu squares, set this to a
+# *Nerd Font Mono* file (the "Mono" variant keeps icons one cell wide).
 # path = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
+
+# fontconfig family name, used after path and $HYPRBURST_FONT. A shared theme
+# fills this when unset. The inline TUI ignores family (terminal-owned font).
+# family = "JetBrainsMono Nerd Font Mono"
 
 # Logical font height in pixels before DPI scaling. Must be > 0. Bump it up if
 # the text looks too small.

@@ -1,6 +1,6 @@
 [package]
 name = "hyprburst"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 description = "Fast fullscreen GPU-rendered application launcher for Arch Linux and Hyprland"
 license = "GPL-3.0-or-later"
@@ -33,6 +33,7 @@ crossterm = "0.29"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+swatches = "0.1.0"
 tachyonfx = "0.25"
 rio-vt = "0.5.1"
 teletypewriter = "0.5.1"

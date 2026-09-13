@@ -1033,7 +1033,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hyprburst"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ab_glyph",
  "corcovado",
@@ -1046,6 +1046,7 @@ dependencies = [
  "rio-vt",
  "rusqlite",
  "serde",
+ "swatches",
  "tachyonfx",
  "teletypewriter",
  "toml",
@@ -2808,6 +2809,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "swatches"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f73236df9798755583fe18b1e482fcd81ead5a92f0f02157968c44741979aa9a"
+dependencies = [
+ "serde",
+ "toml",
 ]
 
 [[package]]

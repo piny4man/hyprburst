@@ -79,7 +79,10 @@ pub fn run(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = match crate::gpu::font::resolve_font(config.font.path.as_deref()) {
+    let font = match crate::gpu::font::resolve_font(
+        config.font.path.as_deref(),
+        config.font.family.as_deref(),
+    ) {
         Some(font) => font,
         None => {
             return Err(
@@ -108,7 +111,10 @@ pub fn run_rio(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = match crate::gpu::font::resolve_font(config.font.path.as_deref()) {
+    let font = match crate::gpu::font::resolve_font(
+        config.font.path.as_deref(),
+        config.font.family.as_deref(),
+    ) {
         Some(font) => font,
         None => {
             return Err(
