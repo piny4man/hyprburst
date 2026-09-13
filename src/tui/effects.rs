@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ratatui::prelude::*;
-use tachyonfx::{EffectRenderer, Interpolation, fx};
+use tachyonfx::{CellFilter, EffectRenderer, Interpolation, fx};
 
 const FADE_IN_MS: u32 = 220;
 
@@ -13,7 +13,10 @@ pub struct FadeIn {
 impl FadeIn {
     pub fn new() -> Self {
         Self {
-            effect: fx::fade_from_fg(Color::Black, (FADE_IN_MS, Interpolation::QuadOut)),
+            // The terminal/GPU host owns Reset's RGB value. Interpolating it
+            // would invent an explicit color (white), even on the final frame.
+            effect: fx::fade_from_fg(Color::Black, (FADE_IN_MS, Interpolation::QuadOut))
+                .with_filter(CellFilter::Not(Box::new(CellFilter::FgColor(Color::Reset)))),
             last_tick: Instant::now(),
         }
     }
@@ -82,6 +85,23 @@ mod tests {
         // Zero elapsed: effect is at t=0, fg should be the "from" color (black).
         fade.apply_to_buffer(&mut buf, area, Duration::ZERO);
         assert_eq!(buf[(0, 0)].fg, Color::Black);
+    }
+
+    #[test]
+    fn fade_preserves_terminal_default_foreground_and_explicit_background() {
+        for elapsed in [
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(1_000),
+        ] {
+            let mut fade = FadeIn::new();
+            let area = Rect::new(0, 0, 5, 1);
+            let mut buf = Buffer::empty(area);
+            buf.set_string(0, 0, "hello", Style::new().fg(Color::Reset).bg(Color::Blue));
+            fade.apply_to_buffer(&mut buf, area, elapsed);
+            assert_eq!(buf[(0, 0)].fg, Color::Reset, "at {elapsed:?}");
+            assert_eq!(buf[(0, 0)].bg, Color::Blue);
+        }
     }
 
     #[test]

@@ -37,7 +37,7 @@
 #   black, red, green, yellow, blue, magenta, cyan, white,
 #   gray / grey, darkgray / darkgrey,
 #   light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan,
-#   reset (falls back to your terminal's default foreground)
+#   reset (uses the hosting terminal's corresponding default in external TUI)
 # Defaults are a modern dark, violet-tinted palette (shown below as hex).
 [colors]
 # banner      = "#c6a0f6"   # ASCII banner
@@ -45,8 +45,14 @@
 # selected    = "#f2d5ff"   # text of the highlighted entry
 # selected_bg = "#3a2e5a"   # highlight bar behind the selected row
 # empty       = "#9a8cb5"   # "no matches" message
-# background  = "#1a1b26"   # window background / dimming panel (see window.opacity)
-# foreground  = "#c8cce0"   # default text color for unstyled (Reset) text
+# background  = "#1a1b26"   # GPU background panel and external TUI base background
+# foreground  = "#c8cce0"   # ordinary text color in all frontends
+#
+# External `hyprburst tui` uses these base colors even without a shared theme.
+# Set foreground/background to "reset" to keep terminal-owned base colors, as
+# in older versions. Explicit selection colors (including "reset") still win.
+# Rio's internal TUI child leaves base colors to its GPU parent, preserving
+# window transparency/opacity. [window] does not control external terminals.
 
 # Launcher window. All keys are optional.
 [window]
