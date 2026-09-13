@@ -87,11 +87,13 @@ pub enum WindowPlacement {
 }
 
 /// The cell font the window rasterizes glyphs from. `path` is an explicit
-/// `.ttf`/`.otf`; when `None` the system monospace (`fc-match`) is used. `size`
-/// is the logical pixel height before DPI scaling.
+/// `.ttf`/`.otf`; `family` is a fontconfig family name used after path and
+/// `$HYPRBURST_FONT`. When both are `None` the system monospace (`fc-match`) is
+/// used. `size` is the logical pixel height before DPI scaling.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FontConfig {
     pub path: Option<String>,
+    pub family: Option<String>,
     pub size: f32,
 }
 
@@ -99,6 +101,7 @@ impl Default for FontConfig {
     fn default() -> Self {
         Self {
             path: None,
+            family: None,
             size: DEFAULT_FONT_SIZE,
         }
     }
@@ -228,7 +231,10 @@ impl Config {
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
-                let (cfg, warnings) = Self::from_toml_str_validating(&contents)?;
+                let config_dir = path.parent().filter(|p| !p.as_os_str().is_empty());
+                let home = std::env::var_os("HOME").map(PathBuf::from);
+                let (cfg, warnings) =
+                    Self::from_toml_str_validating_at(&contents, config_dir, home.as_deref())?;
                 for warning in warnings {
                     eprintln!("hyprburst config warning: {}", warning);
                 }
@@ -247,6 +253,16 @@ impl Config {
     /// recoverable issues (e.g. an invalid terminal flag template) that fall
     /// back to defaults rather than aborting the load.
     pub fn from_toml_str_validating(contents: &str) -> Result<(Self, Vec<String>), ConfigError> {
+        Self::from_toml_str_validating_at(contents, None, None)
+    }
+
+    /// Like [`Self::from_toml_str_validating`], resolving `[appearance] theme_file`
+    /// against `config_dir` and optional `home` (`~/` expansion).
+    pub fn from_toml_str_validating_at(
+        contents: &str,
+        config_dir: Option<&Path>,
+        home: Option<&Path>,
+    ) -> Result<(Self, Vec<String>), ConfigError> {
         let raw: RawConfig = toml::from_str(contents).map_err(|e| {
             let msg = e.message().to_string();
             if msg.contains("terminal") {
@@ -260,7 +276,7 @@ impl Config {
                 ConfigError::Parse(msg)
             }
         })?;
-        raw.into_config()
+        raw.into_config(ThemeSource { config_dir, home })
     }
 }
 
@@ -278,14 +294,26 @@ pub fn default_path() -> PathBuf {
     PathBuf::from("hyprburst.toml")
 }
 
+struct ThemeSource<'a> {
+    config_dir: Option<&'a Path>,
+    home: Option<&'a Path>,
+}
+
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawConfig {
+    appearance: RawAppearance,
     colors: RawColors,
     window: RawWindow,
     font: RawFont,
     layout: RawLayout,
     ui: RawUi,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawAppearance {
+    theme_file: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -339,42 +367,21 @@ struct RawWindow {
 #[serde(default, deny_unknown_fields)]
 struct RawFont {
     path: Option<String>,
+    family: Option<String>,
     size: Option<f32>,
 }
 
 impl RawConfig {
-    fn into_config(self) -> Result<(Config, Vec<String>), ConfigError> {
+    fn into_config(self, source: ThemeSource<'_>) -> Result<(Config, Vec<String>), ConfigError> {
         let defaults = Config::default();
         let mut warnings = Vec::new();
+        let theme =
+            load_optional_theme(self.appearance.theme_file.as_deref(), source, &mut warnings);
 
         let cfg = Config {
-            colors: Colors {
-                banner: resolve_color(self.colors.banner, "colors.banner", defaults.colors.banner)?,
-                prompt: resolve_color(self.colors.prompt, "colors.prompt", defaults.colors.prompt)?,
-                selected: resolve_color(
-                    self.colors.selected,
-                    "colors.selected",
-                    defaults.colors.selected,
-                )?,
-                selected_bg: resolve_color(
-                    self.colors.selected_bg,
-                    "colors.selected_bg",
-                    defaults.colors.selected_bg,
-                )?,
-                empty: resolve_color(self.colors.empty, "colors.empty", defaults.colors.empty)?,
-                background: resolve_color(
-                    self.colors.background,
-                    "colors.background",
-                    defaults.colors.background,
-                )?,
-                foreground: resolve_color(
-                    self.colors.foreground,
-                    "colors.foreground",
-                    defaults.colors.foreground,
-                )?,
-            },
+            colors: resolve_colors(self.colors, theme.as_ref(), &defaults.colors)?,
             window: self.window.into_config()?,
-            font: self.font.into_config()?,
+            font: self.font.into_config(theme.as_ref())?,
             layout: self.layout.into_config(&mut warnings)?,
             ui: self.ui.into_config(&mut warnings)?,
         };
@@ -451,7 +458,7 @@ impl RawWindow {
 }
 
 impl RawFont {
-    fn into_config(self) -> Result<FontConfig, ConfigError> {
+    fn into_config(self, theme: Option<&swatches::Theme>) -> Result<FontConfig, ConfigError> {
         let defaults = FontConfig::default();
 
         let size = match self.size {
@@ -475,7 +482,13 @@ impl RawFont {
             other => other,
         };
 
-        Ok(FontConfig { path, size })
+        let family = match self.family {
+            Some(f) if f.trim().is_empty() => None,
+            Some(f) => Some(parse_font_family(f)?),
+            None => theme.map(|t| t.font().family.as_str().to_string()),
+        };
+
+        Ok(FontConfig { path, family, size })
     }
 }
 
@@ -587,12 +600,105 @@ fn resolve_padding(value: Option<u16>, field: &str, warnings: &mut Vec<String>) 
     }
 }
 
-fn resolve_color(value: Option<String>, field: &str, default: Color) -> Result<Color, ConfigError> {
-    match value {
-        Some(raw) => parse_color(&raw).map_err(|msg| {
-            ConfigError::Validation(format!("{} is not a valid color ({})", field, msg))
-        }),
-        None => Ok(default),
+fn parse_named_color(field: &str, raw: String) -> Result<Color, ConfigError> {
+    parse_color(&raw)
+        .map_err(|msg| ConfigError::Validation(format!("{} is not a valid color ({})", field, msg)))
+}
+
+fn rgb_color(rgb: swatches::Rgb) -> Color {
+    let [r, g, b] = rgb.channels();
+    Color::Rgb(r, g, b)
+}
+
+fn map_theme_colors(colors: &swatches::Colors) -> Colors {
+    let accent = rgb_color(colors.accent);
+    Colors {
+        banner: accent,
+        prompt: accent,
+        selected: rgb_color(colors.selection_foreground),
+        selected_bg: rgb_color(colors.selection_background),
+        empty: rgb_color(colors.muted),
+        background: rgb_color(colors.background),
+        foreground: rgb_color(colors.foreground),
+    }
+}
+
+fn resolve_colors(
+    raw: RawColors,
+    theme: Option<&swatches::Theme>,
+    defaults: &Colors,
+) -> Result<Colors, ConfigError> {
+    let mut colors = match theme {
+        Some(theme) => map_theme_colors(theme.colors()),
+        None => defaults.clone(),
+    };
+    if let Some(value) = raw.banner {
+        colors.banner = parse_named_color("colors.banner", value)?;
+    }
+    if let Some(value) = raw.prompt {
+        colors.prompt = parse_named_color("colors.prompt", value)?;
+    }
+    if let Some(value) = raw.selected {
+        colors.selected = parse_named_color("colors.selected", value)?;
+    }
+    if let Some(value) = raw.selected_bg {
+        colors.selected_bg = parse_named_color("colors.selected_bg", value)?;
+    }
+    if let Some(value) = raw.empty {
+        colors.empty = parse_named_color("colors.empty", value)?;
+    }
+    if let Some(value) = raw.background {
+        colors.background = parse_named_color("colors.background", value)?;
+    }
+    if let Some(value) = raw.foreground {
+        colors.foreground = parse_named_color("colors.foreground", value)?;
+    }
+    Ok(colors)
+}
+
+fn parse_font_family(value: String) -> Result<String, ConfigError> {
+    value
+        .parse::<swatches::FontFamily>()
+        .map(|family| family.as_str().to_string())
+        .map_err(|msg| ConfigError::Validation(format!("font.family is not valid ({msg})")))
+}
+
+fn load_optional_theme(
+    theme_file: Option<&str>,
+    source: ThemeSource<'_>,
+    warnings: &mut Vec<String>,
+) -> Option<swatches::Theme> {
+    let value = theme_file?;
+    if value.trim().is_empty() {
+        warnings.push("appearance.theme_file is empty; ignoring shared theme".to_string());
+        return None;
+    }
+    let path = match source.config_dir {
+        Some(config_dir) => match swatches::resolve_theme_path(value, config_dir, source.home) {
+            Ok(path) => path,
+            Err(err) => {
+                warnings.push(format!("{err}; ignoring shared theme"));
+                return None;
+            }
+        },
+        None => {
+            let path = Path::new(value);
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                warnings.push(format!(
+                    "appearance.theme_file = {value:?} is not absolute and no config directory is available; ignoring shared theme"
+                ));
+                return None;
+            }
+        }
+    };
+    match swatches::Theme::load(&path) {
+        Ok(theme) => Some(theme),
+        Err(err) => {
+            warnings.push(format!("{err}; ignoring shared theme"));
+            None
+        }
     }
 }
 
@@ -977,6 +1083,7 @@ app_id = "custom"
     fn default_font_has_sensible_values() {
         let cfg = Config::default();
         assert_eq!(cfg.font.path, None);
+        assert_eq!(cfg.font.family, None);
         assert_eq!(cfg.font.size, 20.0);
     }
 
@@ -1405,5 +1512,219 @@ padding_vertical = 32
         assert_eq!(cfg.layout.padding_horizontal, 32);
         assert_eq!(cfg.layout.padding_vertical, 32);
         assert!(warnings.is_empty(), "unexpected warnings: {:?}", warnings);
+    }
+
+    const SAMPLE_THEME: &str = r##"
+version = 1
+
+[colors]
+background = "#10253F"
+foreground = "#EAF3FF"
+accent = "#80D4FF"
+muted = "#A4B8CF"
+selection_background = "#244A70"
+selection_foreground = "#FFFFFF"
+
+[font]
+family = "JetBrainsMono Nerd Font Mono"
+"##;
+
+    fn write_theme(dir: &TempDir, name: &str, body: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn load_with_theme(dir: &TempDir, config_body: &str) -> (Config, Vec<String>) {
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, config_body).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        Config::from_toml_str_validating_at(&contents, Some(dir.path()), Some(dir.path())).unwrap()
+    }
+
+    #[test]
+    fn omitted_theme_preserves_standalone_defaults() {
+        let cfg = Config::from_toml_str("").unwrap();
+        assert_eq!(cfg, Config::default());
+        assert_eq!(cfg.font.family, None);
+    }
+
+    #[test]
+    fn theme_maps_all_six_semantic_colors() {
+        let dir = TempDir::new();
+        write_theme(&dir, "theme.toml", SAMPLE_THEME);
+        let (cfg, warnings) = load_with_theme(
+            &dir,
+            r#"
+[appearance]
+theme_file = "theme.toml"
+"#,
+        );
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(cfg.colors.background, Color::Rgb(0x10, 0x25, 0x3F));
+        assert_eq!(cfg.colors.foreground, Color::Rgb(0xEA, 0xF3, 0xFF));
+        assert_eq!(cfg.colors.banner, Color::Rgb(0x80, 0xD4, 0xFF));
+        assert_eq!(cfg.colors.prompt, Color::Rgb(0x80, 0xD4, 0xFF));
+        assert_eq!(cfg.colors.empty, Color::Rgb(0xA4, 0xB8, 0xCF));
+        assert_eq!(cfg.colors.selected_bg, Color::Rgb(0x24, 0x4A, 0x70));
+        assert_eq!(cfg.colors.selected, Color::Rgb(0xFF, 0xFF, 0xFF));
+        assert_eq!(
+            cfg.font.family.as_deref(),
+            Some("JetBrainsMono Nerd Font Mono")
+        );
+    }
+
+    #[test]
+    fn explicit_color_overrides_win_over_theme() {
+        let dir = TempDir::new();
+        write_theme(&dir, "theme.toml", SAMPLE_THEME);
+        let (cfg, warnings) = load_with_theme(
+            &dir,
+            r##"
+[appearance]
+theme_file = "theme.toml"
+
+[colors]
+banner = "#c6a0f6"
+prompt = "red"
+background = "#010203"
+"##,
+        );
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(cfg.colors.banner, Color::Rgb(0xc6, 0xa0, 0xf6));
+        assert_eq!(cfg.colors.prompt, Color::Red);
+        assert_eq!(cfg.colors.background, Color::Rgb(0x01, 0x02, 0x03));
+        assert_eq!(cfg.colors.foreground, Color::Rgb(0xEA, 0xF3, 0xFF));
+        assert_eq!(cfg.colors.selected, Color::Rgb(0xFF, 0xFF, 0xFF));
+    }
+
+    #[test]
+    fn explicit_font_family_wins_over_theme() {
+        let dir = TempDir::new();
+        write_theme(&dir, "theme.toml", SAMPLE_THEME);
+        let (cfg, _) = load_with_theme(
+            &dir,
+            r#"
+[appearance]
+theme_file = "theme.toml"
+
+[font]
+family = "Hack Nerd Font Mono"
+path = "/explicit.ttf"
+"#,
+        );
+        assert_eq!(cfg.font.family.as_deref(), Some("Hack Nerd Font Mono"));
+        assert_eq!(cfg.font.path.as_deref(), Some("/explicit.ttf"));
+    }
+
+    #[test]
+    fn invalid_theme_is_ignored_and_keeps_explicit_overrides() {
+        let dir = TempDir::new();
+        write_theme(&dir, "broken.toml", "this is not a theme\n");
+        let (cfg, warnings) = load_with_theme(
+            &dir,
+            r##"
+[appearance]
+theme_file = "broken.toml"
+
+[colors]
+prompt = "#ff0000"
+"##,
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("broken.toml") && w.contains("ignoring shared theme")),
+            "expected invalid-theme warning, got {warnings:?}"
+        );
+        assert_eq!(cfg.colors.prompt, Color::Rgb(0xff, 0x00, 0x00));
+        assert_eq!(cfg.colors.background, Config::default().colors.background);
+        assert_eq!(cfg.colors.banner, Config::default().colors.banner);
+        assert_eq!(cfg.font.family, None);
+    }
+
+    #[test]
+    fn missing_theme_file_is_ignored_and_keeps_launch_available() {
+        let dir = TempDir::new();
+        let (cfg, warnings) = load_with_theme(
+            &dir,
+            r#"
+[appearance]
+theme_file = "missing.toml"
+"#,
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("missing.toml") && w.contains("ignoring shared theme")),
+            "expected missing-theme warning, got {warnings:?}"
+        );
+        assert_eq!(cfg, Config::default());
+    }
+
+    #[test]
+    fn tilde_theme_path_resolves_against_home() {
+        let home = TempDir::new();
+        let nested = home.path().join("themes");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("swatches.toml"), SAMPLE_THEME).unwrap();
+
+        let config_dir = TempDir::new();
+        let config_path = config_dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[appearance]
+theme_file = "~/themes/swatches.toml"
+"#,
+        )
+        .unwrap();
+        let contents = std::fs::read_to_string(&config_path).unwrap();
+        let (cfg, warnings) = Config::from_toml_str_validating_at(
+            &contents,
+            Some(config_dir.path()),
+            Some(home.path()),
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(cfg.colors.background, Color::Rgb(0x10, 0x25, 0x3F));
+    }
+
+    #[test]
+    fn load_from_twice_selects_the_same_theme() {
+        let dir = TempDir::new();
+        write_theme(&dir, "theme.toml", SAMPLE_THEME);
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[appearance]
+theme_file = "theme.toml"
+"#,
+        )
+        .unwrap();
+        let parent = Config::load_from(&path).unwrap();
+        let child = Config::load_from(&path).unwrap();
+        assert_eq!(parent, child);
+        assert_eq!(parent.colors.prompt, Color::Rgb(0x80, 0xD4, 0xFF));
+    }
+
+    #[test]
+    fn unknown_appearance_field_rejected() {
+        let err = Config::from_toml_str("[appearance]\nmystery = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn font_family_round_trips_without_theme() {
+        let cfg = Config::from_toml_str("[font]\nfamily = \"FiraCode Nerd Font Mono\"\n").unwrap();
+        assert_eq!(cfg.font.family.as_deref(), Some("FiraCode Nerd Font Mono"));
+        assert_eq!(cfg.font.path, None);
+    }
+
+    #[test]
+    fn empty_font_family_becomes_none() {
+        let cfg = Config::from_toml_str("[font]\nfamily = \"  \"\n").unwrap();
+        assert_eq!(cfg.font.family, None);
     }
 }

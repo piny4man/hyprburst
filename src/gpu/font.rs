@@ -7,10 +7,11 @@
 //!
 //! 1. an explicit path from `[font] path` in the config,
 //! 2. the `HYPRBURST_FONT` environment variable (a `.ttf`/`.otf` path),
-//! 3. fontconfig candidates: the default monospace if it is already a Nerd Font,
+//! 3. `[font] family` (or the shared Swatches theme family) via `fc-match`,
+//! 4. fontconfig candidates: the default monospace if it is already a Nerd Font,
 //!    otherwise any installed Nerd Font (a `Mono` variant preferred), then the
 //!    plain default monospace (may lack icon glyphs),
-//! 4. a few common hard-coded paths, as a last resort.
+//! 5. a few common hard-coded paths, as a last resort.
 //!
 //! Cold-start matters here: the common case (a Nerd Font as the default
 //! monospace) costs exactly one `fc-match` spawn; the scan-for-any-Nerd-Font
@@ -36,27 +37,69 @@ const FALLBACK_PATHS: &[&str] = &[
 /// Load the first *parseable* monospace font from the candidate list, or `None`
 /// if nothing resolved. Validation happens here so a readable-but-corrupt file
 /// falls through to the next candidate instead of aborting resolution upstream.
-pub fn resolve_font(config_path: Option<&str>) -> Option<FontVec> {
-    candidate_paths(config_path).into_iter().find_map(|p| {
-        let bytes = std::fs::read(&p).ok()?;
-        FontVec::try_from_vec(bytes).ok()
-    })
+pub fn resolve_font(config_path: Option<&str>, family: Option<&str>) -> Option<FontVec> {
+    candidate_paths(config_path, family)
+        .into_iter()
+        .find_map(|p| {
+            let bytes = std::fs::read(&p).ok()?;
+            FontVec::try_from_vec(bytes).ok()
+        })
 }
 
 /// The ordered list of font paths to try, most-specific first.
-fn candidate_paths(config_path: Option<&str>) -> Vec<PathBuf> {
+fn candidate_paths(config_path: Option<&str>, family: Option<&str>) -> Vec<PathBuf> {
+    let env_path = std::env::var(FONT_ENV).ok();
+    let family_paths = family
+        .filter(|f| !f.is_empty())
+        .and_then(fc_match_family)
+        .into_iter()
+        .collect();
+    collect_candidates(
+        config_path,
+        env_path.as_deref(),
+        family_paths,
+        fc_font_candidates()
+            .into_iter()
+            .chain(FALLBACK_PATHS.iter().map(PathBuf::from)),
+    )
+}
+
+fn collect_candidates(
+    config_path: Option<&str>,
+    env_path: Option<&str>,
+    family_paths: Vec<PathBuf>,
+    later: impl IntoIterator<Item = PathBuf>,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(p) = config_path.filter(|p| !p.is_empty()) {
         paths.push(PathBuf::from(p));
     }
-    if let Ok(p) = std::env::var(FONT_ENV)
-        && !p.is_empty()
-    {
+    if let Some(p) = env_path.filter(|p| !p.is_empty()) {
         paths.push(PathBuf::from(p));
     }
-    paths.extend(fc_font_candidates());
-    paths.extend(FALLBACK_PATHS.iter().map(PathBuf::from));
+    paths.extend(family_paths);
+    paths.extend(later);
     paths
+}
+
+/// `fc-match` file for a configured family name. Fontconfig still returns a
+/// closest match when the family is missing, so this is a preference, not a
+/// guarantee.
+fn fc_match_family(family: &str) -> Option<PathBuf> {
+    let out = Command::new("fc-match")
+        .args(["-f", "%{file}", family])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let file = text.trim();
+    if file.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(file))
+    }
 }
 
 /// fontconfig-derived candidates. ONE `fc-match monospace` spawn answers both
@@ -189,5 +232,39 @@ Liberation Mono\t/usr/share/fonts/liberation.ttf
         let list = "no-tab-here\n\nHack Nerd Font\t\nFiraCode Nerd Font Mono\t/f.ttf\n";
         // The empty-file Hack line is skipped; the Mono one wins.
         assert_eq!(pick_nerd_font(list).as_deref(), Some("/f.ttf"));
+    }
+
+    #[test]
+    fn family_comes_after_path_and_env_before_fontconfig() {
+        let paths = collect_candidates(
+            Some("/cfg.ttf"),
+            Some("/env.ttf"),
+            vec![PathBuf::from("/family.ttf")],
+            [PathBuf::from("/fc.ttf"), PathBuf::from("/fallback.ttf")],
+        );
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/cfg.ttf"),
+                PathBuf::from("/env.ttf"),
+                PathBuf::from("/family.ttf"),
+                PathBuf::from("/fc.ttf"),
+                PathBuf::from("/fallback.ttf"),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_path_and_env_skip_to_family() {
+        let paths = collect_candidates(
+            Some(""),
+            Some(""),
+            vec![PathBuf::from("/family.ttf")],
+            [PathBuf::from("/fc.ttf")],
+        );
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/family.ttf"), PathBuf::from("/fc.ttf")]
+        );
     }
 }

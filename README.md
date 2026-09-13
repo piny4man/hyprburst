@@ -37,7 +37,7 @@ hyprburst/
 │   ├── bench.rs           # Footprint probes for `--measure` / `--bench-startup`
 │   ├── domain/            # Frontend-agnostic state + data (no rendering)
 │   │   ├── launcher_core.rs # Launcher state machine
-│   │   ├── config.rs       # TOML config + XDG path resolution
+│   │   ├── config.rs       # TOML config, XDG paths, optional Swatches theme
 │   │   ├── search.rs       # Hybrid fuzzy/prefix ranking
 │   │   ├── history.rs      # SQLite-backed launch history
 │   │   ├── icon.rs         # Nerd Font glyph mapping by keyword (browser, editor, ...)
@@ -49,7 +49,7 @@ hyprburst/
 │   │   ├── window.rs       # winit + glutin + glow cell renderer; frontend routing
 │   │   ├── rio.rs          # rio-vt PTY, terminal grid, input, resize, and snapshots
 │   │   ├── grid.rs         # Cell metrics, glyph atlas, grid geometry
-│   │   └── font.rs         # Cell-font resolution (config / $HYPRBURST_FONT / Nerd Font)
+│   │   └── font.rs         # Cell-font resolution (path / $HYPRBURST_FONT / family / Nerd Font)
 │   ├── tui/              # Crossterm/ratatui fallback frontend (`hyprburst tui`)
 │   │   ├── launcher.rs     # Launcher widget + crossterm key mapping
 │   │   ├── app.rs          # TUI application state and event loop
@@ -72,7 +72,7 @@ hyprburst/
 - **OS** — Linux with [Hyprland](https://hyprland.org/) (a Wayland session). Hyprburst opens its own GPU window and dispatches launches through `hyprctl`, so it expects a running Hyprland session.
 - **OpenGL** — the launcher window is rendered with OpenGL via your GPU driver (Mesa or vendor). Virtually every Hyprland-capable machine already has this.
 - **Hyprland 0.55+ recommended** — use the Lua bind snippet and configure placement/opacity in `~/.config/hyprburst/config.toml`. Legacy Hyprland 0.48–0.54 / `hyprland.conf` setups can use the shipped hyprlang `hyprburst.conf` with unified `windowrule` syntax.
-- **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. It auto-picks an installed [Nerd Font](https://www.nerdfonts.com/) (a *Mono* variant preferred); if none is installed, the icons show as tofu squares — install one (e.g. `JetBrainsMono Nerd Font`) or set `[font] path` / `$HYPRBURST_FONT` to one.
+- **Nerd Font** — hyprburst renders entry icons as Nerd Font glyphs in the private-use Unicode area. It auto-picks an installed [Nerd Font](https://www.nerdfonts.com/) (a *Mono* variant preferred); if none is installed, the icons show as tofu squares — install one (e.g. `JetBrainsMono Nerd Font`) or set `[font] path` / `[font] family` / `$HYPRBURST_FONT` to one.
 
 ## Install
 
@@ -228,7 +228,8 @@ The launcher window and cell font are configured under `[window]` and `[font]` i
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `font.path` | string | unset | Explicit `.ttf`/`.otf` path for the cell font. When unset, hyprburst auto-picks an installed **Nerd Font** (so icons render), falling back to the system monospace (`fc-match monospace`); `$HYPRBURST_FONT` overrides everything. If icons show as tofu, point this at a *Nerd Font Mono* file. |
+| `font.path` | string | unset | Explicit `.ttf`/`.otf` path for the cell font. Wins over `$HYPRBURST_FONT`, `[font] family`, and fontconfig. If icons show as tofu, point this at a *Nerd Font Mono* file. |
+| `font.family` | string | unset | fontconfig family used after `path` and `$HYPRBURST_FONT`. A shared Swatches theme fills this when unset. Ignored by `hyprburst tui` (the hosting terminal owns that font). |
 | `font.size` | float | `20.0` | Logical font height in pixels (before DPI scaling). The cell size is derived from the font's metrics at this size. Bump it up if text looks too small. |
 
 ## Customizing the look
@@ -284,7 +285,7 @@ selected = "#ffb86c"
 
 ## Environment variables
 
-Hyprburst reads `$HYPRBURST_FONT`, an optional path to a `.ttf`/`.otf` to use as the window's cell font (it overrides `fc-match`, and is itself overridden by `[font] path` in the config). The window launcher uses `$HYPRBURST_CHILD` internally to avoid relaunch loops when applying Hyprland Lua launch rules. Everything else lives in `~/.config/hyprburst/config.toml`. App launches are dispatched through `hyprctl`, which auto-detects the Hyprland dispatch form; set `HYPRBURST_DISPATCH=lua|legacy` to force it if detection ever misfires.
+Hyprburst reads `$HYPRBURST_FONT`, an optional path to a `.ttf`/`.otf` to use as the window's cell font (it overrides `[font] family` and `fc-match`, and is itself overridden by `[font] path`). The window launcher uses `$HYPRBURST_CHILD` internally to avoid relaunch loops when applying Hyprland Lua launch rules. Everything else lives in `~/.config/hyprburst/config.toml`. App launches are dispatched through `hyprctl`, which auto-detects the Hyprland dispatch form; set `HYPRBURST_DISPATCH=lua|legacy` to force it if detection ever misfires.
 
 ## Config
 
@@ -299,7 +300,19 @@ cp config.example.toml ~/.config/hyprburst/config.toml
 
 ### Fields
 
-The `[window]` and `[font]` sections are documented in [Window and font](#window-and-font); `[ui]` and `[layout]` in [Customizing the look](#customizing-the-look). The remaining section controls colors:
+The `[window]` and `[font]` sections are documented in [Window and font](#window-and-font); `[ui]` and `[layout]` in [Customizing the look](#customizing-the-look). Shared Swatches themes are opt-in under `[appearance]`; `[colors]` still controls per-app overrides.
+
+### `[appearance]`
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `appearance.theme_file` | string | unset | Path to a Swatches v1 theme. Relative paths resolve against this config file's directory; `~/` expands to `$HOME`. Loaded once at launch — reopen to apply edits. No theme means today's built-in defaults. |
+
+The six semantic roles map as: **background** → `colors.background`, **foreground** → `colors.foreground`, **accent** → `colors.prompt` and `colors.banner`, **muted** → `colors.empty`, **selection_background** → `colors.selected_bg`, **selection_foreground** → `colors.selected`, **font.family** → `font.family`. Explicit `[colors]` / `[font]` fields always win, even when they equal an old default.
+
+A missing or invalid `theme_file` is reported on stderr and ignored. Hyprburst still launches, keeping valid app overrides and built-in values for everything else. The Rio parent and `hyprburst tui` child each load this file independently, so they pick the same theme. `hyprburst tui` (including that Rio child PTY) uses the resolved colors but **not** the theme family — glyphs there come from the hosting terminal.
+
+The remaining section controls colors:
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
@@ -335,7 +348,7 @@ selected = "light-cyan"
 
 ### Validation
 
-Unknown top-level keys, unknown keys in any section, malformed hex (`#fff`, `#xyzxyz`), unknown color names, and `ui.page_size = 0` are all rejected with a message naming the offending field. On any error hyprburst prints the reason to stderr and starts with the built-in defaults.
+Unknown top-level keys, unknown keys in any section, malformed hex (`#fff`, `#xyzxyz`), unknown color names, and `ui.page_size = 0` are all rejected with a message naming the offending field. On any error hyprburst prints the reason to stderr and starts with the built-in defaults. A missing or invalid `[appearance] theme_file` is a warning, not a hard error: the launcher stays available and explicit `[colors]` / `[font]` overrides are kept.
 
 ## History Schema
 
@@ -392,7 +405,7 @@ Compare first presentation with `hyprburst --measure` (Rio default) and `hyprbur
 
 ## Troubleshooting
 
-**Icons show as tofu squares (□).** No Nerd Font is installed for hyprburst to auto-pick. Install a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font` (the *Mono* variant keeps icons one cell wide), or point `[font] path` (or `$HYPRBURST_FONT`) at one, or set `ui.show_icons = false` to drop icons entirely.
+**Icons show as tofu squares (□).** No Nerd Font is installed for hyprburst to auto-pick. Install a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font` (the *Mono* variant keeps icons one cell wide), or point `[font] path` / `[font] family` (or `$HYPRBURST_FONT`) at one, or set `ui.show_icons = false` to drop icons entirely. `hyprburst tui` uses the terminal's font, so a theme family will not fix tofu there.
 
 **Text is too small.** Raise `[font] size` (default `20.0`).
 
@@ -408,7 +421,7 @@ Compare first presentation with `hyprburst --measure` (Rio default) and `hyprbur
 
 **`Super+Space` does nothing.** Confirm the bind sources/loads correctly (`bind = SUPER, Space, exec, hyprburst`, or the Lua `hl.bind(...)`) and that `hyprburst` is on the `PATH` Hyprland sees.
 
-**My config isn't taking effect.** An invalid config is rejected and hyprburst falls back to built-in defaults, printing the reason to stderr. Run `hyprburst tui` from a shell to see the message, then fix the named field. Note: the `[terminal]` section was removed in 0.5 and now errors — see [Upgrading from 0.4.x](#upgrading-from-04x). Unknown keys are hard errors. See [Validation](#validation).
+**My config isn't taking effect.** An invalid config is rejected and hyprburst falls back to built-in defaults, printing the reason to stderr. Run `hyprburst tui` from a shell to see the message, then fix the named field. Theme edits apply on the next launch, not live. A bad `appearance.theme_file` prints a warning and is ignored. Note: the `[terminal]` section was removed in 0.5 and now errors — see [Upgrading from 0.4.x](#upgrading-from-04x). Unknown keys are hard errors. See [Validation](#validation).
 
 ## License
 

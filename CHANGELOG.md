@@ -5,6 +5,18 @@ All notable changes to Hyprburst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-13
+
+### Added
+
+- Optional Swatches theme via `[appearance] theme_file`. The six semantic
+  roles map onto Hyprburst colors (accent → prompt and banner; muted → empty;
+  selection_* → selected_bg / selected) and `font.family`. Explicit `[colors]`
+  and `[font]` fields win. A missing or invalid theme is reported and ignored
+  so the launcher still opens. Native GPU, Rio parent, and TUI child all load
+  the same file once at launch; reopen to apply edits. The inline TUI keeps
+  the hosting terminal's font.
+
 ## [0.7.0] - 2026-08-23
 
 ### Added
