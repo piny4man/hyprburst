@@ -56,14 +56,6 @@ impl<T: Send + 'static> Pending<T> {
         }
     }
 
-    /// The error if the worker has been joined and failed.
-    pub(crate) fn failed(&self) -> Option<&str> {
-        match self {
-            Self::Done(Err(err)) => Some(err),
-            _ => None,
-        }
-    }
-
     /// [`Pending::ready`], mutably.
     pub(crate) fn ready_mut(&mut self) -> Option<&mut T> {
         match self {
@@ -103,12 +95,10 @@ mod tests {
     fn get_joins_once_and_keeps_the_value() {
         let mut pending = Pending::spawn("hyprburst-test", || Ok(vec![1]));
         assert!(pending.ready().is_none(), "not joined yet");
-        assert!(pending.failed().is_none(), "not joined yet");
         pending.get().unwrap().push(2);
         assert_eq!(pending.get().unwrap(), &mut vec![1, 2]);
         assert_eq!(pending.ready_mut(), Some(&mut vec![1, 2]));
         assert_eq!(pending.ready(), Some(&vec![1, 2]));
-        assert!(pending.failed().is_none());
     }
 
     #[test]
@@ -117,7 +107,6 @@ mod tests {
         assert_eq!(failed.get().unwrap_err(), "no font");
         assert_eq!(failed.get().unwrap_err(), "no font");
         assert!(failed.ready_mut().is_none());
-        assert_eq!(failed.failed(), Some("no font"));
 
         let mut panicked: Pending<()> = Pending::spawn("hyprburst-test", || panic!("boom"));
         let err = panicked.get().unwrap_err();

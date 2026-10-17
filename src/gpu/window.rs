@@ -76,9 +76,9 @@ static MEASURE: AtomicBool = AtomicBool::new(false);
 /// exits right after the first present, printing the cold-start / RSS report.
 ///
 /// Fonts and the [`LauncherCore`] (app discovery, history) are built on worker
-/// threads while the event loop, window and GL context are created; the fonts
-/// are joined in [`GlState::new`] and the core in `resumed`, before the first
-/// paint.
+/// threads while the event loop and window are created. `resumed` joins the
+/// fonts once the window exists (the cell size needs its scale factor) and the
+/// core after GL setup, before the first paint.
 pub fn run(
     config: Config,
     measure: bool,
@@ -103,8 +103,8 @@ pub fn run(
     app.finish()
 }
 
-/// Resolve and load the fonts on a worker; [`GlState::new`] joins them once the
-/// window and GL context exist.
+/// Resolve and load the fonts on a worker; `resumed` joins them once the window
+/// exists.
 fn spawn_fonts(config: &Config) -> Pending<FontSet> {
     let path = config.font.path.clone();
     let family = config.font.family.clone();
@@ -118,7 +118,9 @@ fn spawn_fonts(config: &Config) -> Pending<FontSet> {
 
 /// Open the default Rio-backed frontend. Rio owns the PTY and VT grid while the
 /// existing OpenGL renderer keeps ownership of the native window. Fonts load on
-/// a worker thread while the window and GL context are created, as in [`run`].
+/// a worker thread while the window is created, as in [`run`]; the PTY child is
+/// spawned as soon as the grid is known, so its startup and first draw overlap
+/// GL context creation.
 pub fn run_rio(
     config: Config,
     measure: bool,
@@ -156,7 +158,7 @@ enum Frontend {
 /// mutation happens on the main thread.
 struct App {
     start: Instant,
-    /// Loading on a worker until [`GlState::new`] joins it.
+    /// Loading on a worker until `resumed` joins it.
     font: Pending<FontSet>,
     /// A startup failure (no font, launcher setup) for [`run`] to return.
     startup_error: Option<String>,
@@ -337,38 +339,38 @@ impl ApplicationHandler<()> for App {
             .with_inner_size(winit::dpi::LogicalSize::new(self.win_w, self.win_h))
             .with_transparent(self.transparent);
 
-        let gl = match GlState::new(event_loop, window_attributes, &mut self.font, self.font_px) {
-            Ok(gl) => gl,
+        let (window, gl_config) = match GlState::open_window(event_loop, window_attributes) {
+            Ok(opened) => opened,
             Err(err) => {
-                match self.font.failed() {
-                    Some(font_err) => self.startup_error = Some(font_err.to_owned()),
-                    None => eprintln!("hyprburst: GL bootstrap failed: {err}"),
-                }
+                eprintln!("hyprburst: GL bootstrap failed: {err}");
                 event_loop.exit();
                 return;
             }
         };
 
-        let size = gl.window.inner_size();
-        self.cell = gl.renderer.cell;
+        // The fonts load on a worker while the window is created.
+        let fm = match self.font.get() {
+            Ok(font) => font_metrics(font, window.scale_factor(), self.font_px),
+            Err(err) => {
+                self.startup_error = Some(err);
+                event_loop.exit();
+                return;
+            }
+        };
+        let size = window.inner_size();
+        self.cell = fm.cell;
         let grid = grid_size((size.width, size.height), self.cell);
         self.grid = (grid.cols, grid.rows);
         self.repaint_needed = true;
 
-        match &mut self.frontend {
-            Frontend::Launcher(core) => {
-                if let Err(err) = core.get() {
-                    self.startup_error = Some(err);
-                    event_loop.exit();
-                    return;
-                }
-                gl.window.request_redraw();
-            }
-            Frontend::Rio {
-                session,
-                executable,
-                wake,
-            } => match Session::spawn(
+        // Start the Rio child now, so its startup overlaps GL context creation.
+        if let Frontend::Rio {
+            session,
+            executable,
+            wake,
+        } = &mut self.frontend
+        {
+            match Session::spawn(
                 executable,
                 self.grid,
                 (size.width, size.height),
@@ -381,7 +383,25 @@ impl ApplicationHandler<()> for App {
                     event_loop.exit();
                     return;
                 }
-            },
+            }
+        }
+
+        let gl = match GlState::new(window, &gl_config, &fm) {
+            Ok(gl) => gl,
+            Err(err) => {
+                eprintln!("hyprburst: GL bootstrap failed: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        if let Frontend::Launcher(core) = &mut self.frontend {
+            if let Err(err) = core.get() {
+                self.startup_error = Some(err);
+                event_loop.exit();
+                return;
+            }
+            gl.window.request_redraw();
         }
         self.gl = Some(gl);
     }
@@ -561,11 +581,11 @@ impl ApplicationHandler<()> for App {
                     }
                 }
 
-                // Fade-in: ease-out ramp of the global alpha over FADE_SECS,
-                // measured from the first painted frame.
-                let fade_start = self.fade_start.get_or_insert_with(Instant::now);
-                let t = (fade_start.elapsed().as_secs_f32() / FADE_SECS).clamp(0.0, 1.0);
-                let alpha = 1.0 - (1.0 - t).powi(4);
+                let (alpha, animating) = fade_step(
+                    &mut self.fade_start,
+                    !self.glyphs.is_empty(),
+                    Instant::now(),
+                );
                 unsafe {
                     let size = gl.window.inner_size();
                     gl.renderer.draw(
@@ -599,7 +619,7 @@ impl ApplicationHandler<()> for App {
                 }
 
                 // Keep animating until the fade completes.
-                if t < 1.0 {
+                if animating {
                     gl.window.request_redraw();
                 }
 
@@ -762,13 +782,12 @@ struct GlState {
 }
 
 impl GlState {
+    /// Create the window and pick the GL config with the most alpha bits.
     #[hotpath::measure(impl_type = "GlState")]
-    fn new(
+    fn open_window(
         event_loop: &ActiveEventLoop,
         window_attributes: WindowAttributes,
-        font: &mut Pending<FontSet>,
-        font_px: f32,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<(Window, glutin::config::Config), Box<dyn std::error::Error>> {
         let template = ConfigTemplateBuilder::new()
             .with_alpha_size(8)
             .with_transparency(true);
@@ -789,25 +808,33 @@ impl GlState {
                 .expect("no GL configs offered by the driver")
         })?;
         let window = window.ok_or("winit did not create a window")?;
+        Ok((window, gl_config))
+    }
 
+    /// Finish GL setup on `window`: context, surface, and the cell renderer for
+    /// the font metrics `fm`.
+    #[hotpath::measure(impl_type = "GlState")]
+    fn new(
+        window: Window,
+        gl_config: &glutin::config::Config,
+        fm: &FontMetrics,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let raw_window_handle = window.window_handle()?.as_raw();
         let gl_display = gl_config.display();
 
         let context_attributes = ContextAttributesBuilder::new().build(Some(raw_window_handle));
-        let not_current = unsafe { gl_display.create_context(&gl_config, &context_attributes)? };
+        let not_current = unsafe { gl_display.create_context(gl_config, &context_attributes)? };
 
         let surface_attrs =
             window.build_surface_attributes(SurfaceAttributesBuilder::<WindowSurface>::new())?;
-        let surface = unsafe { gl_display.create_window_surface(&gl_config, &surface_attrs)? };
+        let surface = unsafe { gl_display.create_window_surface(gl_config, &surface_attrs)? };
         let context = not_current.make_current(&surface)?;
 
         let gl = unsafe {
             glow::Context::from_loader_function_cstr(|s| gl_display.get_proc_address(s).cast())
         };
 
-        // The fonts load on a worker while the window and context are created.
-        let fm = font_metrics(font.get()?, window.scale_factor(), font_px);
-        let renderer = unsafe { CellRenderer::new(&gl, &fm)? };
+        let renderer = unsafe { CellRenderer::new(&gl, fm)? };
 
         Ok(Self {
             window,
@@ -1298,4 +1325,56 @@ fn report(variant: &str, cold_start_ns: u64) {
         bench::render_table(&metrics),
         bench::to_json(&metrics)
     );
+}
+
+/// One frame of the fade-in: the global alpha at `now`, and whether to keep
+/// animating. The ease-out ramp over [`FADE_SECS`] starts on the first frame
+/// that has content; frames before it (Rio's panel before the child has
+/// drawn) are drawn at alpha 0 and don't animate, since the content's wake
+/// redraws.
+fn fade_step(fade_start: &mut Option<Instant>, has_content: bool, now: Instant) -> (f32, bool) {
+    let Some(start) = fade_start.or(has_content.then_some(now)) else {
+        return (0.0, false);
+    };
+    *fade_start = Some(start);
+    let t = (now.saturating_duration_since(start).as_secs_f32() / FADE_SECS).clamp(0.0, 1.0);
+    (1.0 - (1.0 - t).powi(4), t < 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fade_waits_for_content_without_animating() {
+        let mut start = None;
+        assert_eq!(fade_step(&mut start, false, Instant::now()), (0.0, false));
+        assert_eq!(start, None);
+    }
+
+    #[test]
+    fn fade_starts_on_first_content_and_ramps_to_opaque() {
+        let t0 = Instant::now();
+        let mut start = None;
+        assert_eq!(fade_step(&mut start, true, t0), (0.0, true));
+        assert_eq!(start, Some(t0));
+
+        let half = Duration::from_secs_f32(FADE_SECS / 2.0);
+        let (alpha, animating) = fade_step(&mut start, true, t0 + half);
+        assert!(alpha > 0.5 && alpha < 1.0, "{alpha}");
+        assert!(animating);
+
+        let done = Duration::from_secs_f32(FADE_SECS);
+        assert_eq!(fade_step(&mut start, true, t0 + done), (1.0, false));
+    }
+
+    #[test]
+    fn a_started_fade_continues_through_empty_frames() {
+        let t0 = Instant::now();
+        let mut start = Some(t0);
+        let (alpha, animating) = fade_step(&mut start, false, t0 + Duration::from_millis(50));
+        assert!(alpha > 0.0, "{alpha}");
+        assert!(animating);
+        assert_eq!(start, Some(t0));
+    }
 }

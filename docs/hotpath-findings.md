@@ -130,6 +130,9 @@ today, less once finding 1 lands) off first presentation.
 
 ### 3. Rio shows an empty panel for ~30 ms; the child waits a frame before drawing
 
+**Fixed in [NUKE-113](https://linear.app/tiendacables/issue/NUKE-113); see
+[After NUKE-113](#after-nuke-113--2026-10-17).**
+
 The Rio parent presents its first frame before the PTY child has drawn
 anything, and only spawns the child after GL setup. The child then calls
 `poll_batch` (a 16 ms input wait) before its forced first draw. Together the
@@ -276,6 +279,83 @@ What remains:
   overlapped here finishes inside it.
 - Rio content still arrives ~30 ms after its blank frame (NUKE-113).
 
+## After NUKE-113 — 2026-10-17
+
+Branch `perf/rio-first-draw` (on `dca12a7`, which includes NUKE-112). Three
+changes:
+
+- The TUI loop (`tui_loop` in `src/main.rs`) draws its first frame before
+  the first `poll_batch`, instead of after a 16 ms input wait.
+- `GlState::new` is split. `GlState::open_window` creates the window and
+  picks the GL config (~21 ms in performance, ~25 ms in balanced). `resumed`
+  then joins the fonts, computes the grid and spawns the Rio child.
+  `GlState::new` creates the context, surface and cell renderer afterwards
+  (~8 ms). The child's exec, `App::new` and first draw now overlap that last
+  part, instead of following it.
+- The blank first present is kept: it is drawn at alpha 0, and the fade-in
+  (`fade_step`) starts on the first frame with glyphs. In practice the child
+  now finishes drawing (~32 ms) before GL setup does (~34 ms), so Rio's first
+  present already carries content: `first-present` and
+  `first-content-present` coincide.
+
+Also fixed: the child dropped terminal resize events, so after a window
+resize the Rio grid re-laid out only on the next key. `poll_batch` now
+reports `Event::Resize` as an input, which triggers a redraw. This was
+pre-existing on `main` and is unrelated to open latency.
+
+### Where a Rio open goes now
+
+Wall-clock trace of 10 cold Rio opens in performance, before and after
+(medians in ms from process start; temporary instrumentation, not committed):
+
+| Step | Before (`dca12a7`) | After |
+| --- | ---: | ---: |
+| window created | 24.1 | 23.6 |
+| child spawned | 33.8 | 25.1 |
+| child `App::new` done | 39.6 | 31.6 |
+| child first draw | 56.5 | 31.9 |
+| GL ready | ~32 | 33.9 |
+| first present | 36.2 | 36.6 |
+| first content present | 70.8 | 36.6 |
+
+### First-content present, p95 (ms)
+
+Interleaved A/B against `main` (`dca12a7`), 30 cold + 30 warm opens of each
+per frontend and profile. The performance run was taken before the resize fix,
+which does not touch the open path; the balanced run uses the final build.
+
+| Open | Frontend | Perf main | Perf branch | Δ | Bal main | Bal branch | Δ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cold | rio | 74.0 | 40.6 | −33.4 | 79.9 | 45.7 | −34.2 |
+| warm | rio | 77.6 | 44.4 | −33.2 | 86.8 | 53.1 | −33.7 |
+| cold | native | 37.7 | 37.3 | −0.4 | 42.5 | 42.4 | −0.1 |
+| warm | native | 46.3 | 43.7 | −2.6 | 47.8 | 47.7 | −0.1 |
+
+Rio vs native on the branch (target: within 10 ms): performance +3.3 ms cold,
++0.7 ms warm; balanced +3.3 ms cold, +5.4 ms warm. **Passes in all four
+cells.** Native is unchanged, as expected. Rio medians drop from 69–74 ms to
+36–42 ms.
+
+Hotpath reports (3 per profile) agree: Rio content at 35.5–37.5 ms in
+performance and 41.9–43.4 ms in balanced, with `GlState::open_window`
+21–26 ms, `GlState::new` 8–9 ms and `Session::spawn` 1.3–1.9 ms.
+
+### Balanced vs performance
+
+Balanced/performance p95 ratios on the branch: Rio +12.6% cold, +19.6% warm;
+native +13.7% cold, +9.2% warm. Rio used to pass this target comfortably
+because its ~30 ms blank-panel wait did not scale with the CPU profile. Now
+that Rio opens as fast as native, it shows the same 3–9 ms profile gap on a
+~40 ms open, and the same noise. As with NUKE-112, this is a relative target
+on a small number. Absolute balanced opens are the fastest yet (Rio 46–53 ms
+p95, previously 78–87 ms). NUKE-115 now applies to both frontends.
+
+What remains:
+
+- `GlState::open_window` (~21 ms, mostly winit/Wayland window creation and
+  EGL config selection) is now the critical path for both frontends.
+- No follow-up issue is proposed for Rio: the done-when target is met.
+
 ## Follow-ups
 
 Filed as sub-issues of NUKE-109:
@@ -284,6 +364,6 @@ Filed as sub-issues of NUKE-109:
 | --- | --- | --- | --- |
 | [NUKE-111](https://linear.app/tiendacables/issue/NUKE-111) Cache font resolution and skip the Nerd Font scan | 1 | — | fixed (see above) |
 | [NUKE-112](https://linear.app/tiendacables/issue/NUKE-112) Load fonts while the window and GL context are created | 2 | NUKE-111 | fixed (see above) |
-| [NUKE-113](https://linear.app/tiendacables/issue/NUKE-113) Rio: draw before the first input poll, spawn the child earlier | 3 | — | open |
+| [NUKE-113](https://linear.app/tiendacables/issue/NUKE-113) Rio: draw before the first input poll, spawn the child earlier | 3 | — | fixed (see above) |
 | [NUKE-114](https://linear.app/tiendacables/issue/NUKE-114) Probe: count no-op keys the same way in both frontends | 5 | — | open |
-| [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | open: native opens faster, but the ≤ 10% ratio swings 1.5–18% between sessions |
+| [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | open: both frontends now open in ~40 ms, and the ≤ 10% ratio swings 1.5–20% between sessions |
