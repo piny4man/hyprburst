@@ -110,6 +110,7 @@ fn is_icon(ch: char) -> bool {
 
 /// Resolve once per window. Keeping the font set immutable means atlas keys can
 /// remain characters: a given character always selects the same face and glyph.
+#[hotpath::measure]
 pub(crate) fn resolve_fonts(config_path: Option<&str>, family: Option<&str>) -> Option<FontSet> {
     fonts_from_paths(candidate_paths(config_path, family))
 }

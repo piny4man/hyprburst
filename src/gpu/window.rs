@@ -20,7 +20,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ab_glyph::{Font, PxScale, ScaleFont};
 use glow::HasContext;
@@ -53,6 +53,7 @@ use crate::gpu::grid::{
     grid_size,
 };
 use crate::gpu::rio::{KeyInput, Session};
+use crate::perf::{self, InputKind, InputProbe, OpenProbe};
 use crate::view::layout::entry_at;
 use crate::view::render::{RenderCache, render_core};
 
@@ -173,6 +174,10 @@ struct App {
     repaint_needed: bool,
     /// Shared render-string/layout cache for the launcher buffer path.
     render_cache: RenderCache,
+    /// `HYPRBURST_PERF` input-to-present probe; `None` when the probe is off.
+    perf: Option<InputProbe>,
+    /// `HYPRBURST_PERF` first-content probe; `None` when the probe is off.
+    open_probe: Option<OpenProbe>,
 }
 
 impl App {
@@ -234,6 +239,8 @@ impl App {
             rio_rows: Vec::new(),
             repaint_needed: true,
             render_cache: RenderCache::new(),
+            perf: perf::enabled().then(InputProbe::default),
+            open_probe: perf::enabled().then(OpenProbe::default),
             frontend,
             gl: None,
             cell: CellMetrics::new(1, 1),
@@ -354,6 +361,11 @@ impl ApplicationHandler<()> for App {
                     match &mut self.frontend {
                         Frontend::Launcher(core) => {
                             if let Some(action) = key_to_action(&event) {
+                                if let (Some(probe), Some(kind)) =
+                                    (&mut self.perf, InputKind::of_action(action))
+                                {
+                                    probe.input(kind, Instant::now());
+                                }
                                 core.apply(action);
                                 self.repaint_needed = true;
                                 if !core.running() {
@@ -368,6 +380,11 @@ impl ApplicationHandler<()> for App {
                             ..
                         } => {
                             if let Some(key) = terminal_key(&event) {
+                                if let (Some(probe), Some(kind)) =
+                                    (&mut self.perf, key.input_kind())
+                                {
+                                    probe.input(kind, Instant::now());
+                                }
                                 session.send_key(key);
                             }
                         }
@@ -439,6 +456,9 @@ impl ApplicationHandler<()> for App {
                     return;
                 }
 
+                // Whether this frame shows new content (not just a fade step):
+                // only such a frame answers a pending input for the probe.
+                let mut visible_change = true;
                 match &mut self.frontend {
                     Frontend::Launcher(core) => {
                         build_cells(
@@ -462,6 +482,7 @@ impl ApplicationHandler<()> for App {
                             &mut self.bgs,
                             &mut self.glyphs,
                         );
+                        visible_change = changed;
                         if !changed && fade_done {
                             // The wake carried no visible change; skip the draw
                             // and present, and stay idle until the next event.
@@ -470,6 +491,7 @@ impl ApplicationHandler<()> for App {
                         }
                     }
                     Frontend::Rio { session: None, .. } => {
+                        visible_change = false;
                         self.bgs.clear();
                         self.glyphs.clear();
                     }
@@ -501,6 +523,16 @@ impl ApplicationHandler<()> for App {
                     eprintln!("hyprburst: buffer swap failed: {err:?}");
                 }
                 self.repaint_needed = false;
+                let frontend = match &self.frontend {
+                    Frontend::Launcher(_) => "native",
+                    Frontend::Rio { .. } => "rio",
+                };
+                if visible_change
+                    && let Some(probe) = &mut self.perf
+                    && let Some((kind, latency)) = probe.presented(Instant::now())
+                {
+                    perf::emit(kind.metric(), frontend, latency);
+                }
 
                 // Keep animating until the fade completes.
                 if t < 1.0 {
@@ -512,12 +544,26 @@ impl ApplicationHandler<()> for App {
                 let first = FIRST_PRESENT_NS
                     .compare_exchange(0, ns, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok();
-                if first && MEASURE.load(Ordering::SeqCst) {
+                if first && self.perf.is_some() {
+                    perf::emit("first-present", frontend, Duration::from_nanos(ns));
+                }
+                if let Some(probe) = &mut self.open_probe
+                    && let Some(latency) = probe.presented(self.glyphs.len(), self.start.elapsed())
+                {
+                    perf::emit("first-content-present", frontend, latency);
+                }
+                // With the probe on, stay open until the launcher content (for
+                // Rio, the child's first paint) has been presented, and report
+                // only then: the footprint probe runs `cargo tree` on this
+                // thread, which would otherwise delay the child's frame.
+                if MEASURE.load(Ordering::SeqCst)
+                    && self.open_probe.as_ref().is_none_or(OpenProbe::done)
+                {
                     let variant = match &self.frontend {
                         Frontend::Launcher(_) => "gui",
                         Frontend::Rio { .. } => "rio-vt",
                     };
-                    report(variant, ns);
+                    report(variant, FIRST_PRESENT_NS.load(Ordering::SeqCst));
                     event_loop.exit();
                 }
             }
@@ -548,6 +594,7 @@ impl ApplicationHandler<()> for App {
 /// the non-blank cells the GL renderer draws into reused lists. The buffer and
 /// cell lists persist across frames, so a keystroke reuses their capacity
 /// instead of reallocating the whole grid.
+#[hotpath::measure]
 fn build_cells(
     core: &mut LauncherCore,
     cache: &mut RenderCache,
@@ -651,6 +698,7 @@ struct GlState {
 }
 
 impl GlState {
+    #[hotpath::measure(impl_type = "GlState")]
     fn new(
         event_loop: &ActiveEventLoop,
         window_attributes: WindowAttributes,
@@ -773,6 +821,7 @@ impl CellRenderer {
     /// Returns `Err` instead of panicking on GL object-creation or shader
     /// failures — those are driver-dependent conditions, not logic bugs, and
     /// the caller surfaces them as a clean `GL bootstrap failed` exit.
+    #[hotpath::measure(impl_type = "CellRenderer")]
     unsafe fn new(gl: &glow::Context, fm: &FontMetrics) -> Result<Self, String> {
         let program = unsafe { build_program(gl)? };
         let vao = unsafe {
@@ -872,6 +921,7 @@ impl CellRenderer {
 
     /// Ensure `ch` is resident in the atlas, rasterizing + uploading it on
     /// first sight. Returns its normalized UV rect, or `None` if the atlas is full.
+    #[hotpath::measure(impl_type = "CellRenderer")]
     fn ensure_glyph(
         &mut self,
         gl: &glow::Context,
@@ -921,6 +971,7 @@ impl CellRenderer {
     /// on change we re-orphan + refill the VBO via `buffer_data`, the standard
     /// driver-friendly dynamic path, instead of sub-updating variable slices.
     #[allow(clippy::too_many_arguments)]
+    #[hotpath::measure(impl_type = "CellRenderer")]
     unsafe fn draw(
         &mut self,
         gl: &glow::Context,

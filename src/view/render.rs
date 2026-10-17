@@ -72,6 +72,7 @@ impl Default for RenderCache {
 /// Render a [`LauncherCore`] into a ratatui buffer, reusing `cache` across
 /// frames. Pushes the layout's column count into the core before projecting its
 /// view, so grid navigation stays consistent with what was drawn.
+#[hotpath::measure]
 pub fn render_core(cache: &mut RenderCache, core: &mut LauncherCore, area: Rect, buf: &mut Buffer) {
     cache.refresh(area, core.config());
     core.set_columns(cache.rects.columns);

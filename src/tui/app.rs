@@ -22,6 +22,7 @@ impl App {
         }
     }
 
+    #[hotpath::measure(impl_type = "App")]
     pub fn handle_key(&mut self, code: KeyCode) {
         self.launcher.handle_key(code);
         self.running = self.launcher.running();
@@ -47,6 +48,7 @@ impl App {
 }
 
 impl Widget for &mut App {
+    #[hotpath::measure(impl_type = "App")]
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.launcher.render(area, buf);
     }

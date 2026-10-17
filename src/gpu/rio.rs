@@ -23,6 +23,7 @@ use rio_vt::performer::Machine;
 use teletypewriter::{WinsizeBuilder, create_pty_with_spawn};
 
 use crate::gpu::grid::{BgCell, CellInstance};
+use crate::perf::InputKind;
 
 const ROUTE_ID: usize = 1;
 const SCROLLBACK_LINES: usize = 1_000;
@@ -133,6 +134,20 @@ pub(crate) enum KeyInput {
     PageDown,
 }
 
+impl KeyInput {
+    /// The latency target this key counts toward for `HYPRBURST_PERF`, or
+    /// `None` for keys that close the window.
+    pub(crate) fn input_kind(&self) -> Option<InputKind> {
+        match self {
+            Self::Text(_) | Self::Backspace | Self::Tab => Some(InputKind::Query),
+            Self::Up | Self::Down | Self::Left | Self::Right | Self::PageUp | Self::PageDown => {
+                Some(InputKind::Selection)
+            }
+            Self::Enter | Self::Escape => None,
+        }
+    }
+}
+
 fn encode_key(key: KeyInput, app_cursor: bool) -> Vec<u8> {
     match key {
         KeyInput::Text(text) => text.into_bytes(),
@@ -165,6 +180,7 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    #[hotpath::measure(impl_type = "Session")]
     pub fn spawn(
         executable: &Path,
         grid: (u16, u16),
@@ -265,6 +281,7 @@ impl Session {
     /// wakes that only move the unrendered cursor report
     /// `TerminalDamage::CursorOnly`/`Noop`, leave the buffers untouched, and
     /// let the caller skip rebuilding and presenting entirely.
+    #[hotpath::measure(impl_type = "Session")]
     pub fn frame_into(
         &self,
         default_fg: [f32; 3],
@@ -492,6 +509,30 @@ mod tests {
     use rio_vt::performer::handler::Processor;
 
     use super::*;
+
+    #[test]
+    fn keys_split_into_query_and_selection() {
+        for key in [
+            KeyInput::Text("a".into()),
+            KeyInput::Backspace,
+            KeyInput::Tab,
+        ] {
+            assert_eq!(key.input_kind(), Some(InputKind::Query));
+        }
+        for key in [
+            KeyInput::Up,
+            KeyInput::Down,
+            KeyInput::Left,
+            KeyInput::Right,
+            KeyInput::PageUp,
+            KeyInput::PageDown,
+        ] {
+            assert_eq!(key.input_kind(), Some(InputKind::Selection));
+        }
+        for key in [KeyInput::Enter, KeyInput::Escape] {
+            assert_eq!(key.input_kind(), None);
+        }
+    }
 
     #[test]
     fn child_runs_the_inline_tui() {

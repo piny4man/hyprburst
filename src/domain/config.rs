@@ -224,6 +224,7 @@ impl std::error::Error for ConfigError {
 }
 
 impl Config {
+    #[hotpath::measure(impl_type = "Config")]
     pub fn load() -> Result<Self, ConfigError> {
         Self::load_from(&default_path())
     }

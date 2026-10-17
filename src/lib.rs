@@ -10,10 +10,12 @@
 //! - [`tui`] — the crossterm/ratatui fallback for SSH / no-GPU sessions.
 //! - [`system`] — Hyprland integration.
 //! - [`bench`] — the live `--measure` / `--bench-startup` footprint probes.
+//! - [`perf`] — the `HYPRBURST_PERF` input-to-present latency probe.
 
 pub mod bench;
 pub mod domain;
 pub mod gpu;
+pub mod perf;
 pub mod system;
 pub mod tui;
 pub mod view;
