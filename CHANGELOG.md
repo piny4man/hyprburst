@@ -5,6 +5,16 @@ All notable changes to Hyprburst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Native and Rio icons are no longer about half the text height. An icon
+  followed by a blank cell (the usual `icon name` layout) is now fitted
+  across two cells, like a double-width glyph in a terminal, instead of being
+  squeezed into one text cell. Icons with no room next to them keep the
+  one-cell size.
+
 ## [0.9.0] - 2026-10-17
 
 ### Added

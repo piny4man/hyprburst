@@ -65,6 +65,36 @@ pub struct CellInstance {
     pub color: [f32; 3],
 }
 
+/// The atlas tiles that draw `glyphs`, each with the cell it lands in. An icon
+/// whose right-hand neighbour is blank and inside the grid spans both cells
+/// (left half, right half), like a double-width glyph in a terminal; otherwise
+/// every glyph is one tile. `glyphs` must be row-major (both producers are), so
+/// the neighbour, if any, is the next entry.
+pub fn glyph_tiles(
+    glyphs: &[CellInstance],
+    cols: u16,
+) -> impl Iterator<Item = (CellInstance, GlyphKey)> + '_ {
+    glyphs.iter().enumerate().flat_map(move |(i, c)| {
+        let next_free = c.col.checked_add(1).is_some_and(|next| next < cols)
+            && glyphs
+                .get(i + 1)
+                .is_none_or(|n| n.row != c.row || n.col != c.col + 1);
+        let (first, second) = if next_free && crate::gpu::font::is_icon(c.ch) {
+            let right = CellInstance {
+                col: c.col + 1,
+                ..*c
+            };
+            (
+                (*c, GlyphKey::half(c.ch, GlyphSpan::Left)),
+                Some((right, GlyphKey::half(c.ch, GlyphSpan::Right))),
+            )
+        } else {
+            ((*c, GlyphKey::new(c.ch)), None)
+        };
+        std::iter::once(first).chain(second)
+    })
+}
+
 /// Map a window's pixel size to a grid: as many whole cells as fit, at least 1×1.
 /// The remainder pixels are left as padding the renderer can letterbox. The
 /// *total* cell count is capped at `u16::MAX`: the renderer iterates cells
@@ -115,15 +145,32 @@ pub fn cell_at_pixel(
 /// (the shader tints a single white-on-clear glyph), and neither does weight:
 /// the rasterizer draws one regular-weight bitmap per character, so keying bold
 /// separately would just burn a second atlas slot for an identical tile. If
-/// true bold rasterization lands later, add the flag back here.
+/// true bold rasterization lands later, add the flag back here. The span does
+/// key the slot: a two-cell icon is two tiles, distinct from its one-cell form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
     pub ch: char,
+    pub span: GlyphSpan,
+}
+
+/// Which part of a glyph a one-cell tile holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GlyphSpan {
+    /// The whole glyph, fitted to one cell.
+    Single,
+    /// The left cell of an icon fitted across two cells.
+    Left,
+    /// The right cell of an icon fitted across two cells.
+    Right,
 }
 
 impl GlyphKey {
     pub fn new(ch: char) -> Self {
-        Self { ch }
+        Self::half(ch, GlyphSpan::Single)
+    }
+
+    pub fn half(ch: char, span: GlyphSpan) -> Self {
+        Self { ch, span }
     }
 }
 
@@ -321,6 +368,92 @@ mod tests {
             "bold and regular share the character's slot"
         );
         assert_eq!(atlas.len(), 1);
+    }
+
+    #[test]
+    fn atlas_keys_each_half_of_a_wide_icon_to_its_own_slot() {
+        // A two-cell icon is drawn as two tiles; neither half may alias the
+        // one-cell rendering of the same character.
+        let mut atlas = Atlas::new((64, 64), CellMetrics::new(16, 16));
+        let icon = '\u{f269}';
+        let single = atlas.get_or_insert(GlyphKey::new(icon)).unwrap();
+        let left = atlas
+            .get_or_insert(GlyphKey::half(icon, GlyphSpan::Left))
+            .unwrap();
+        let right = atlas
+            .get_or_insert(GlyphKey::half(icon, GlyphSpan::Right))
+            .unwrap();
+        assert!(left.newly_inserted && right.newly_inserted);
+        let mut indices = [single.index, left.index, right.index];
+        indices.sort_unstable();
+        assert_eq!(indices, [0, 1, 2]);
+        assert_eq!(GlyphKey::new(icon).span, GlyphSpan::Single);
+    }
+
+    fn glyph(col: u16, row: u16, ch: char) -> CellInstance {
+        CellInstance {
+            col,
+            row,
+            ch,
+            bold: false,
+            color: [1.0; 3],
+        }
+    }
+
+    fn tiles(glyphs: &[CellInstance], cols: u16) -> Vec<(u16, u16, GlyphKey)> {
+        glyph_tiles(glyphs, cols)
+            .map(|(c, key)| (c.col, c.row, key))
+            .collect()
+    }
+
+    const ICON: char = '\u{f269}';
+
+    #[test]
+    fn icon_before_a_blank_cell_spans_two_cells() {
+        // "> <icon> Firefox": the space after the icon is not a glyph.
+        let glyphs = [glyph(0, 0, '>'), glyph(2, 0, ICON), glyph(4, 0, 'F')];
+        assert_eq!(
+            tiles(&glyphs, 10),
+            vec![
+                (0, 0, GlyphKey::new('>')),
+                (2, 0, GlyphKey::half(ICON, GlyphSpan::Left)),
+                (3, 0, GlyphKey::half(ICON, GlyphSpan::Right)),
+                (4, 0, GlyphKey::new('F')),
+            ]
+        );
+    }
+
+    #[test]
+    fn icon_with_an_occupied_neighbour_or_at_the_edge_stays_one_cell() {
+        let crowded = [glyph(0, 0, ICON), glyph(1, 0, 'x')];
+        assert_eq!(
+            tiles(&crowded, 10),
+            vec![(0, 0, GlyphKey::new(ICON)), (1, 0, GlyphKey::new('x'))]
+        );
+        let edge = [glyph(9, 0, ICON)];
+        assert_eq!(tiles(&edge, 10), vec![(9, 0, GlyphKey::new(ICON))]);
+    }
+
+    #[test]
+    fn icon_spans_when_the_next_glyph_is_on_the_next_row() {
+        let glyphs = [glyph(3, 0, ICON), glyph(4, 1, 'x')];
+        assert_eq!(
+            tiles(&glyphs, 10),
+            vec![
+                (3, 0, GlyphKey::half(ICON, GlyphSpan::Left)),
+                (4, 0, GlyphKey::half(ICON, GlyphSpan::Right)),
+                (4, 1, GlyphKey::new('x')),
+            ]
+        );
+    }
+
+    #[test]
+    fn text_is_never_widened() {
+        let glyphs = [glyph(0, 0, 'a'), glyph(2, 0, 'b')];
+        assert_eq!(
+            tiles(&glyphs, 10),
+            vec![(0, 0, GlyphKey::new('a')), (2, 0, GlyphKey::new('b'))]
+        );
     }
 
     #[test]

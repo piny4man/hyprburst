@@ -50,7 +50,7 @@ use crate::domain::launcher_core::{LauncherAction, LauncherCore};
 use crate::gpu::font::{FontSet, resolve_fonts};
 use crate::gpu::grid::{
     Atlas, BgCell, CellInstance, CellMetrics, GlyphKey, GridSize, cell_at_pixel, cell_rect,
-    grid_size,
+    glyph_tiles, grid_size,
 };
 use crate::gpu::rio::{KeyInput, Session};
 use crate::gpu::startup::Pending;
@@ -1014,26 +1014,26 @@ impl CellRenderer {
         })
     }
 
-    /// Ensure `ch` is resident in the atlas, rasterizing + uploading it on
+    /// Ensure `key` is resident in the atlas, rasterizing + uploading it on
     /// first sight. Returns its normalized UV rect, or `None` if the atlas is full.
     #[hotpath::measure(impl_type = "CellRenderer")]
     fn ensure_glyph(
         &mut self,
         gl: &glow::Context,
         font: &FontSet,
-        ch: char,
+        key: GlyphKey,
     ) -> Option<(f32, f32, f32, f32)> {
-        let slot = self.atlas.get_or_insert(GlyphKey::new(ch))?;
+        let slot = self.atlas.get_or_insert(key)?;
         if slot.newly_inserted {
-            self.rasterize_into(gl, font, ch, slot.px);
+            self.rasterize_into(gl, font, key, slot.px);
         }
         Some(self.atlas.uv_rect(slot))
     }
 
-    /// Rasterize `ch` into the atlas tile at pixel origin `px` via `ab_glyph`.
-    fn rasterize_into(&self, gl: &glow::Context, font: &FontSet, ch: char, px: (u32, u32)) {
+    /// Rasterize `key` into the atlas tile at pixel origin `px` via `ab_glyph`.
+    fn rasterize_into(&self, gl: &glow::Context, font: &FontSet, key: GlyphKey, px: (u32, u32)) {
         let (cw, ch_px) = (self.cell.cell_w, self.cell.cell_h);
-        let coverage = font.coverage(ch, (cw, ch_px), self.scale, self.ascent);
+        let coverage = font.coverage_span(key.ch, key.span, (cw, ch_px), self.scale, self.ascent);
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_tex));
             gl.tex_sub_image_2d(
@@ -1108,10 +1108,12 @@ impl CellRenderer {
                 b.color,
             );
         }
-        // 3. Glyph quads on top. The verts borrow is taken per push so it never
-        // overlaps `ensure_glyph`'s `&mut self` (atlas insertion).
-        for c in glyphs {
-            let Some((u0, v0, u1, v1)) = self.ensure_glyph(gl, font, c.ch) else {
+        // 3. Glyph quads on top; an icon with a blank neighbour spans two cells.
+        // The verts borrow is taken per push so it never overlaps
+        // `ensure_glyph`'s `&mut self` (atlas insertion).
+        let cols = grid_size((width, height), cell).cols;
+        for (c, key) in glyph_tiles(glyphs, cols) {
+            let Some((u0, v0, u1, v1)) = self.ensure_glyph(gl, font, key) else {
                 continue;
             };
             let (x, y, w, h) = cell_rect(c.col, c.row, cell);

@@ -1,9 +1,10 @@
 //! Monospace-font resolution for the GUI launcher.
 //!
 //! Both GPU frontends retain the requested primary text font and search fallback
-//! fonts for missing glyphs. Private-use icons are fitted to the primary cell;
-//! without an icon font, a procedural four-tile app symbol avoids missing-glyph
-//! boxes. The `tui` fallback still uses the hosting terminal's font.
+//! fonts for missing glyphs. Private-use icons are fitted across two primary
+//! cells when the next cell is blank (one cell otherwise), so the icon, not the
+//! text face's advance width, sets their size; without an icon font, a
+//! procedural four-tile app symbol avoids missing-glyph boxes. The `tui` fallback still uses the hosting terminal's font.
 //! Resolution order, most specific first:
 //!
 //! 1. an explicit path from `[font] path` in the config,
@@ -33,6 +34,8 @@ use std::time::SystemTime;
 
 use ab_glyph::{Font, FontVec, PxScale};
 
+use crate::gpu::grid::GlyphSpan;
+
 /// Immutable font selection for one GUI session; text geometry always uses primary.
 pub(crate) struct FontSet {
     pub(crate) primary: FontVec,
@@ -47,6 +50,8 @@ impl FontSet {
             .find(|font| font.glyph_id(ch).0 != 0)
     }
 
+    /// One-cell coverage of `ch`: the span every non-icon cell uses.
+    #[cfg(test)]
     pub(crate) fn coverage(
         &self,
         ch: char,
@@ -54,6 +59,46 @@ impl FontSet {
         scale: PxScale,
         ascent: f32,
     ) -> Vec<u8> {
+        self.coverage_span(ch, GlyphSpan::Single, size, scale, ascent)
+    }
+
+    /// One `size` tile of `ch`. For an icon, `Left`/`Right` are the halves of
+    /// the icon fitted across two cells; text ignores the span, and without an
+    /// icon font the square badge stays in the left cell.
+    pub(crate) fn coverage_span(
+        &self,
+        ch: char,
+        span: GlyphSpan,
+        size: (u32, u32),
+        scale: PxScale,
+        ascent: f32,
+    ) -> Vec<u8> {
+        let (cw, height) = size;
+        let split = match span {
+            GlyphSpan::Single => None,
+            _ if !is_icon(ch) => None,
+            _ if self.glyph_font(ch).is_none() => {
+                return match span {
+                    GlyphSpan::Right => vec![0; (cw * height) as usize],
+                    _ => self.rasterize(ch, size, scale, ascent),
+                };
+            }
+            GlyphSpan::Left => Some(0),
+            GlyphSpan::Right => Some(cw as usize),
+        };
+        let Some(offset) = split else {
+            return self.rasterize(ch, size, scale, ascent);
+        };
+        let wide_w = cw.checked_mul(2).expect("cell size overflow");
+        let wide = self.rasterize(ch, (wide_w, height), scale, ascent);
+        wide.chunks_exact(wide_w as usize)
+            .flat_map(|row| &row[offset..offset + cw as usize])
+            .copied()
+            .collect()
+    }
+
+    /// Rasterize `ch` into one `size` tile; icons are fitted to the whole tile.
+    fn rasterize(&self, ch: char, size: (u32, u32), scale: PxScale, ascent: f32) -> Vec<u8> {
         let (cw, height) = size;
         let mut coverage = vec![0; cw.checked_mul(height).expect("cell size overflow") as usize];
         let icon = is_icon(ch);
@@ -114,7 +159,7 @@ impl FontSet {
 }
 
 /// Nerd Font icons occupy Unicode's private-use areas (including supplementary).
-fn is_icon(ch: char) -> bool {
+pub(crate) fn is_icon(ch: char) -> bool {
     matches!(ch as u32, 0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd)
 }
 
@@ -521,6 +566,83 @@ mod tests {
         assert!(
             fonts
                 .coverage(' ', (12, 20), PxScale::from(20.0), 16.0)
+                .iter()
+                .all(|c| *c == 0)
+        );
+    }
+
+    /// Ink bounding box `(left, right, top, bottom)` of a `w`-wide coverage map.
+    fn ink_bounds(pixels: &[u8], w: u32) -> (u32, u32, u32, u32) {
+        let points: Vec<_> = pixels
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c > 0)
+            .map(|(i, _)| (i as u32 % w, i as u32 / w))
+            .collect();
+        assert!(!points.is_empty(), "glyph must be visible");
+        (
+            points.iter().map(|p| p.0).min().unwrap(),
+            points.iter().map(|p| p.0).max().unwrap(),
+            points.iter().map(|p| p.1).min().unwrap(),
+            points.iter().map(|p| p.1).max().unwrap(),
+        )
+    }
+
+    /// Join a left and a right `w`×`h` tile into one `2w`×`h` coverage map.
+    fn join_halves(left: &[u8], right: &[u8], w: u32, h: u32) -> Vec<u8> {
+        let w = w as usize;
+        let mut joined = Vec::with_capacity(2 * w * h as usize);
+        for row in 0..h as usize {
+            joined.extend_from_slice(&left[row * w..(row + 1) * w]);
+            joined.extend_from_slice(&right[row * w..(row + 1) * w]);
+        }
+        joined
+    }
+
+    #[test]
+    fn two_cell_icon_is_larger_than_one_cell_fit_and_never_clipped() {
+        let fonts = fixture_fonts();
+        let (w, h, scale, ascent) = (12, 25, PxScale::from(25.0), 20.0);
+        let icon = '\u{f269}';
+        let single = fonts.coverage(icon, (w, h), scale, ascent);
+        let left = fonts.coverage_span(icon, GlyphSpan::Left, (w, h), scale, ascent);
+        let right = fonts.coverage_span(icon, GlyphSpan::Right, (w, h), scale, ascent);
+        assert_eq!(left.len(), (w * h) as usize);
+        assert_eq!(right.len(), (w * h) as usize);
+        let wide = join_halves(&left, &right, w, h);
+
+        let (sl, sr, st, sb) = ink_bounds(&single, w);
+        let (wl, wr, wt, wb) = ink_bounds(&wide, 2 * w);
+        assert!(wr - wl > sr - sl, "two cells give the icon more width");
+        assert!(wb - wt >= sb - st, "and never less height");
+        assert!(
+            wl > 0 && wr < 2 * w - 1 && wt > 0 && wb < h - 1,
+            "wide icon must fit both cells without clipping"
+        );
+        assert!((wl as i32 - (2 * w - 1 - wr) as i32).abs() <= 1, "centred");
+        assert!(left.iter().any(|c| *c > 0) && right.iter().any(|c| *c > 0));
+    }
+
+    #[test]
+    fn text_and_badge_ignore_the_two_cell_span() {
+        let fonts = fixture_fonts();
+        let (size, scale) = ((12, 20), PxScale::from(20.0));
+        // Non-icons are never split: the left half is the one-cell glyph.
+        assert_eq!(
+            fonts.coverage_span('A', GlyphSpan::Left, size, scale, 16.0),
+            fonts.coverage('A', size, scale, 16.0)
+        );
+        // Without an icon font, the square badge stays in the left cell.
+        let mut fonts = fixture_fonts();
+        fonts.fallbacks.clear();
+        let icon = '\u{f269}';
+        assert_eq!(
+            fonts.coverage_span(icon, GlyphSpan::Left, size, scale, 16.0),
+            fonts.coverage(icon, size, scale, 16.0)
+        );
+        assert!(
+            fonts
+                .coverage_span(icon, GlyphSpan::Right, size, scale, 16.0)
                 .iter()
                 .all(|c| *c == 0)
         );
