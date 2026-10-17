@@ -10,4 +10,5 @@
 pub mod font;
 pub mod grid;
 pub mod rio;
+mod startup;
 pub mod window;
