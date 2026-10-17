@@ -99,6 +99,9 @@ Ranked by expected impact on what the user waits for.
 
 ### 1. `resolve_fonts` spawns two fontconfig processes on every open (~42 ms)
 
+**Fixed in [NUKE-111](https://linear.app/tiendacables/issue/NUKE-111); see
+[After NUKE-111](#after-nuke-111--2026-10-17).**
+
 `resolve_fonts` takes 41–47 ms on every open in both frontends, about half of
 native first presentation. Even with `[font] path` set, it runs `fc-match
 monospace` (~9.5 ms measured standalone) and, because that match (Noto Sans
@@ -163,11 +166,57 @@ Rio this blocked the PTY wake: content appeared at ~185 ms instead of ~107 ms.
 With `HYPRBURST_PERF` set, `--measure` now reports after content has been
 presented; the reported cold-start value is unchanged.
 
+## After NUKE-111 — 2026-10-17
+
+Branch `perf/font-resolution` (on `9554c90`). Same machine, procedure and
+sample counts as the baseline (30 cold + 30 warm opens per frontend and
+profile), with this machine's config (`[font] path` set to 0xProto Nerd Font
+Mono).
+
+`resolve_fonts` no longer runs fontconfig when the configured (or
+`HYPRBURST_FONT`) font already has Nerd Font icons; otherwise the fontconfig
+answer is cached in `$XDG_CACHE_HOME/hyprburst/fonts` and looked up again only
+when the font inputs or the fontconfig cache directories' mtimes change, or a
+cached font is gone.
+
+`resolve_fonts` per open (hotpath): 39–43 ms before; 1.1–1.4 ms after on the
+skip path, 1.4–2.2 ms on a cache hit without `[font] path`. An uncached lookup
+still costs 30–40 ms and happens once after fonts change.
+
+### First presentation, p95 (ms)
+
+| Open | Frontend | Performance | Δ baseline | Balanced | Δ baseline | Balanced vs perf | ≤ 10% |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | :---: |
+| cold | native | 42.9 | −43.1 | 46.9 | −47.0 | +9.4% | pass |
+| cold | rio | 74.9 | −39.6 | 77.8 | −45.5 | +3.9% | pass |
+| warm | native | 49.4 | −41.7 | 52.6 | −51.3 | +6.3% | pass |
+| warm | rio | 80.6 | −41.9 | 80.1 | −50.2 | −0.6% | pass |
+| cold | rio, blank frame | 39.9 | −39.4 | 43.0 | −46.2 | +7.8% | (pass) |
+| warm | rio, blank frame | 45.8 | −43.4 | 44.5 | −54.2 | −2.7% | (pass) |
+
+Medians (performance → balanced): cold native 39.6 → 43.5, cold rio 70.0 →
+74.3, warm native 42.0 → 46.4, warm rio 70.3 → 73.9.
+
+NUKE-111's done-when holds: `resolve_fonts` is under 15 ms with a warm cache,
+and native first-content p95 dropped by 41–51 ms (≥ 25 ms required) in both
+profiles. Every first-presentation target now passes, including warm native
+(finding 4, tracked in NUKE-115), although cold native at +9.4% has little
+margin.
+
+What remains, in order:
+
+- `GlState::new` is now the largest open phase: 28–30 ms in performance, 42 ms
+  in one balanced report (NUKE-112).
+- Rio content still arrives 31–35 ms after its blank frame (NUKE-113).
+
 ## Follow-ups
 
-Drafted for approval, not yet filed:
+Filed as sub-issues of NUKE-109:
 
-1. Cache font resolution and skip the Nerd Font scan (finding 1).
-2. Overlap font loading with GL context creation (finding 2).
-3. Rio: first draw before first poll, earlier child spawn (finding 3).
-4. Probe: consistent no-op key handling across frontends (finding 5).
+| Issue | Finding | Blocked by | Status |
+| --- | --- | --- | --- |
+| [NUKE-111](https://linear.app/tiendacables/issue/NUKE-111) Cache font resolution and skip the Nerd Font scan | 1 | — | fixed (see above) |
+| [NUKE-112](https://linear.app/tiendacables/issue/NUKE-112) Load fonts while the window and GL context are created | 2 | NUKE-111 | open |
+| [NUKE-113](https://linear.app/tiendacables/issue/NUKE-113) Rio: draw before the first input poll, spawn the child earlier | 3 | — | open |
+| [NUKE-114](https://linear.app/tiendacables/issue/NUKE-114) Probe: count no-op keys the same way in both frontends | 5 | — | open |
+| [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | passes after NUKE-111; confirm after NUKE-112 |
