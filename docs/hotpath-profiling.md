@@ -130,7 +130,9 @@ for i in $(seq 30); do HYPRBURST_CHILD=1 HYPRBURST_PERF=1 \
 
 - Open and first presentation: `Config::load`, `discover_apps`,
   `History::open`, `load_scores`, `LauncherCore::new`, `resolve_fonts`,
-  `GlState::new`, `CellRenderer::new`, and `Session::spawn` (the Rio PTY child).
+  `GlState::open_window` (window and GL config), `GlState::new` (context,
+  surface, renderer), `CellRenderer::new`, and `Session::spawn` (the Rio PTY
+  child, started between the two `GlState` phases).
 - Query and filter: `LauncherCore::{apply,rebuild_filtered}` and
   `filter_and_rank`.
 - Selection and render: `LauncherCore::{move_vertical,move_horizontal,view}`,

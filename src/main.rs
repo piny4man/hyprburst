@@ -149,32 +149,74 @@ fn run_tui(gpu_host: bool) -> io::Result<()> {
     }));
 
     let mut app = App::new(config);
-    let mut force_draw = true;
-    while app.running {
-        // Block up to one frame for the first event, then drain the burst and
-        // apply it all before a single redraw.
-        let inputs = input::poll_batch()?;
-        let got_input = !inputs.is_empty();
-        for input in inputs {
-            match input {
-                input::Input::Key(code) => app.handle_key(code),
-                input::Input::Mouse(event) => app.handle_mouse(event),
-            }
-        }
-
-        if force_draw || got_input || app.effects_running() {
+    tui_loop(
+        &mut app,
+        |app| {
             terminal
                 .draw(|frame| {
                     let area = frame.area();
-                    frame.render_widget(&mut app, area);
+                    frame.render_widget(&mut *app, area);
                     app.apply_effects(frame, area);
                 })
                 .map_err(|err| io::Error::other(format!("terminal draw failed: {err}")))?;
-            force_draw = false;
+            Ok(())
+        },
+        input::poll_batch,
+    )?;
+
+    terminal::restore()
+}
+
+/// What [`tui_loop`] needs from the app.
+trait LoopApp {
+    fn running(&self) -> bool;
+    fn handle(&mut self, input: input::Input);
+    fn effects_running(&self) -> bool;
+}
+
+impl LoopApp for App {
+    fn running(&self) -> bool {
+        self.running
+    }
+
+    fn handle(&mut self, input: input::Input) {
+        match input {
+            input::Input::Key(code) => self.handle_key(code),
+            input::Input::Mouse(event) => self.handle_mouse(event),
+            input::Input::Resize => {}
         }
     }
 
-    terminal::restore()
+    fn effects_running(&self) -> bool {
+        App::effects_running(self)
+    }
+}
+
+/// Drive `app` until it stops. The first frame is drawn before any input wait,
+/// so the launcher shows as soon as it is built. Each turn after that, `poll`
+/// blocks up to one frame for the first event and drains the burst, which is
+/// applied before a single `draw`; an idle turn draws only while an effect is
+/// animating.
+fn tui_loop<A: LoopApp>(
+    app: &mut A,
+    mut draw: impl FnMut(&mut A) -> io::Result<()>,
+    mut poll: impl FnMut() -> io::Result<Vec<input::Input>>,
+) -> io::Result<()> {
+    if app.running() {
+        draw(app)?;
+    }
+    while app.running() {
+        let inputs = poll()?;
+        let got_input = !inputs.is_empty();
+        for input in inputs {
+            app.handle(input);
+        }
+
+        if got_input || app.effects_running() {
+            draw(app)?;
+        }
+    }
+    Ok(())
 }
 
 /// Open the launcher window. `measure` exits right after the first frame with a
@@ -288,6 +330,79 @@ fn io_to_exit(result: io::Result<()>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyCode;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    /// Stops on `Esc`; animates for `effect_frames` drawn frames.
+    struct FakeApp<'a> {
+        log: &'a RefCell<Vec<&'static str>>,
+        running: bool,
+        effect_frames: usize,
+    }
+
+    impl LoopApp for FakeApp<'_> {
+        fn running(&self) -> bool {
+            self.running
+        }
+
+        fn handle(&mut self, input: input::Input) {
+            self.log.borrow_mut().push("input");
+            if matches!(input, input::Input::Key(KeyCode::Esc)) {
+                self.running = false;
+            }
+        }
+
+        fn effects_running(&self) -> bool {
+            self.effect_frames > 0
+        }
+    }
+
+    /// Run the loop over `batches` of keys and return the call order.
+    fn drive(effect_frames: usize, batches: Vec<Vec<KeyCode>>) -> Vec<&'static str> {
+        let log = RefCell::new(Vec::new());
+        let mut batches: VecDeque<_> = batches.into();
+        let mut app = FakeApp {
+            log: &log,
+            running: true,
+            effect_frames,
+        };
+        tui_loop(
+            &mut app,
+            |app| {
+                app.log.borrow_mut().push("draw");
+                app.effect_frames = app.effect_frames.saturating_sub(1);
+                Ok(())
+            },
+            || {
+                log.borrow_mut().push("poll");
+                let keys = batches.pop_front().unwrap_or(vec![KeyCode::Esc]);
+                Ok(keys.into_iter().map(input::Input::Key).collect())
+            },
+        )
+        .unwrap();
+        log.into_inner()
+    }
+
+    #[test]
+    fn first_frame_is_drawn_before_waiting_for_input() {
+        assert_eq!(
+            drive(0, vec![vec![], vec![KeyCode::Char('f')]]),
+            [
+                "draw", "poll", "poll", "input", "draw", "poll", "input", "draw"
+            ]
+        );
+    }
+
+    #[test]
+    fn idle_turns_draw_only_while_effects_run() {
+        assert_eq!(
+            drive(2, vec![vec![], vec![], vec![]]),
+            [
+                "draw", "poll", "draw", "poll", "poll", "poll", "input", "draw"
+            ]
+        );
+    }
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
