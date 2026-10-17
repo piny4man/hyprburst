@@ -109,7 +109,11 @@ per metric and frontend; other stderr lines are ignored.
 ### Cold and warm open
 
 Each open is a fresh process. Without root the page cache cannot be dropped,
-so both cases run with binaries, fonts, and `.desktop` files cached:
+so both cases run with binaries, fonts, and `.desktop` files cached. Font
+resolution is cached too (`$XDG_CACHE_HOME/hyprburst/fonts`, unless the
+configured font already has icons); the first open after installing or
+removing fonts pays a fontconfig lookup of 30–40 ms, so do one throwaway open
+before a run:
 
 - **cold**: the first open after at least 2 s idle, so the CPU has clocked down
   and its caches are cold — what pressing the launcher key costs;

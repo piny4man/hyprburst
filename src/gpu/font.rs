@@ -14,12 +14,22 @@
 //!    plain default monospace (may lack icon glyphs),
 //! 5. a few common hard-coded paths, as a last resort.
 //!
-//! Cold-start matters here: the common case (a Nerd Font as the default
-//! monospace) costs exactly one `fc-match` spawn; the scan-for-any-Nerd-Font
-//! path adds one `fc-list`.
+//! Cold-start matters here (fontconfig spawns cost ~10–30 ms per open):
+//!
+//! - when the first parseable font from 1–2 already has Nerd Font icons,
+//!   fontconfig is skipped entirely and only the hard-coded paths that exist
+//!   are kept as text fallbacks;
+//! - otherwise the fontconfig answers (3–4) are cached in
+//!   `$XDG_CACHE_HOME/hyprburst/fonts`, keyed by the inputs and the fontconfig
+//!   cache directories' mtimes, and looked up again only when the key changes
+//!   or a cached font no longer exists. Uncached, the common case (a Nerd Font
+//!   as the default monospace) is one `fc-match` spawn; the
+//!   scan-for-any-Nerd-Font path adds one `fc-list`.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 use ab_glyph::{Font, FontVec, PxScale};
 
@@ -112,19 +122,70 @@ fn is_icon(ch: char) -> bool {
 /// remain characters: a given character always selects the same face and glyph.
 #[hotpath::measure]
 pub(crate) fn resolve_fonts(config_path: Option<&str>, family: Option<&str>) -> Option<FontSet> {
-    fonts_from_paths(candidate_paths(config_path, family))
+    let env_path = std::env::var(FONT_ENV).ok();
+    let fallbacks: Vec<PathBuf> = FALLBACK_PATHS.iter().map(PathBuf::from).collect();
+    resolve_with(config_path, env_path.as_deref(), &fallbacks, || {
+        cached_fontconfig_paths(config_path, env_path.as_deref(), family)
+    })
 }
 
+/// A Font Awesome icon every Nerd Font carries and the launcher draws
+/// (nf-fa-firefox). A configured font that has it needs no fontconfig-derived
+/// icon fallback.
+const ICON_PROBE: char = '\u{f269}';
+
+fn has_icons(font: &FontVec) -> bool {
+    font.glyph_id(ICON_PROBE).0 != 0
+}
+
+/// Resolve from the explicit `config_path` / `env_path` fonts, consulting
+/// `fontconfig` only when the first parseable explicit font lacks icons.
+fn resolve_with(
+    config_path: Option<&str>,
+    env_path: Option<&str>,
+    fallbacks: &[PathBuf],
+    fontconfig: impl FnOnce() -> Vec<PathBuf>,
+) -> Option<FontSet> {
+    let mut seen = HashSet::new();
+    let mut fonts = load_fonts(
+        collect_candidates(config_path, env_path, Vec::new(), []),
+        &mut seen,
+    );
+    let derived = if fonts.first().is_some_and(has_icons) {
+        Vec::new()
+    } else {
+        fontconfig()
+    };
+    fonts.extend(load_fonts(
+        derived.into_iter().chain(fallbacks.iter().cloned()),
+        &mut seen,
+    ));
+    font_set(fonts)
+}
+
+#[cfg(test)]
 fn fonts_from_paths(paths: Vec<PathBuf>) -> Option<FontSet> {
-    let mut seen = std::collections::HashSet::new();
-    let mut fonts = paths
-        .into_iter()
-        .filter(|p| seen.insert(p.clone()))
-        .filter_map(|p| FontVec::try_from_vec(std::fs::read(p).ok()?).ok());
+    font_set(load_fonts(paths, &mut HashSet::new()))
+}
+
+fn font_set(fonts: Vec<FontVec>) -> Option<FontSet> {
+    let mut fonts = fonts.into_iter();
     Some(FontSet {
         primary: fonts.next()?,
         fallbacks: fonts.collect(),
     })
+}
+
+/// Every parseable font among `paths` not already in `seen`, in order.
+fn load_fonts(
+    paths: impl IntoIterator<Item = PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) -> Vec<FontVec> {
+    paths
+        .into_iter()
+        .filter(|p| seen.insert(p.clone()))
+        .filter_map(|p| FontVec::try_from_vec(std::fs::read(p).ok()?).ok())
+        .collect()
 }
 
 /// The environment variable that pins the cell font, overriding `fc-match`.
@@ -143,30 +204,115 @@ const FALLBACK_PATHS: &[&str] = &[
 /// if nothing resolved. Validation happens here so a readable-but-corrupt file
 /// falls through to the next candidate instead of aborting resolution upstream.
 pub fn resolve_font(config_path: Option<&str>, family: Option<&str>) -> Option<FontVec> {
-    candidate_paths(config_path, family)
-        .into_iter()
-        .find_map(|p| {
-            let bytes = std::fs::read(&p).ok()?;
-            FontVec::try_from_vec(bytes).ok()
-        })
+    resolve_fonts(config_path, family).map(|fonts| fonts.primary)
 }
 
-/// The ordered list of font paths to try, most-specific first.
-fn candidate_paths(config_path: Option<&str>, family: Option<&str>) -> Vec<PathBuf> {
-    let env_path = std::env::var(FONT_ENV).ok();
-    let family_paths = family
+/// The cache key for fontconfig-derived paths: every input that can change the
+/// answer, plus the fontconfig cache directories' `stamps` (mtimes), which
+/// `fc-cache` bumps when fonts are installed or removed. Always one line.
+fn cache_key(
+    config_path: Option<&str>,
+    env_path: Option<&str>,
+    family: Option<&str>,
+    stamps: &[Option<SystemTime>],
+) -> String {
+    let stamps: Vec<Option<u128>> = stamps
+        .iter()
+        .map(|t| {
+            Some(
+                t.as_ref()?
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .ok()?
+                    .as_nanos(),
+            )
+        })
+        .collect();
+    // `Debug` escapes control characters, so the key never spans lines.
+    format!("v1 {:?}", (config_path, env_path, family, stamps))
+}
+
+/// Cached fontconfig-derived paths in `file` for `key`, or `lookup()` (written
+/// back best-effort) when the cache is missing, stale, corrupt, or names a
+/// font that no longer exists.
+fn cached_paths(file: &Path, key: &str, lookup: impl FnOnce() -> Vec<PathBuf>) -> Vec<PathBuf> {
+    if let Some(paths) = read_cache(file, key) {
+        return paths;
+    }
+    let paths = lookup();
+    write_cache(file, key, &paths);
+    paths
+}
+
+fn read_cache(file: &Path, key: &str) -> Option<Vec<PathBuf>> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != key {
+        return None;
+    }
+    let paths: Vec<PathBuf> = lines.map(PathBuf::from).collect();
+    paths.iter().all(|p| p.exists()).then_some(paths)
+}
+
+/// Best effort: a failed write only means the next open looks up again.
+fn write_cache(file: &Path, key: &str, paths: &[PathBuf]) {
+    let mut text = format!("{key}\n");
+    for path in paths {
+        match path.to_str() {
+            Some(p) if !p.contains('\n') => text.push_str(&format!("{p}\n")),
+            _ => return,
+        }
+    }
+    let Some(dir) = file.parent() else {
+        return;
+    };
+    // Write-then-rename so a concurrent open never reads a half-written file.
+    let tmp = file.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::create_dir_all(dir).is_ok() && std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, file);
+    }
+}
+
+/// `$XDG_CACHE_HOME`, else `$HOME/.cache`.
+fn cache_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".cache")))
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// fontconfig-derived paths through the on-disk cache, when there is a cache
+/// directory to use.
+fn cached_fontconfig_paths(
+    config_path: Option<&str>,
+    env_path: Option<&str>,
+    family: Option<&str>,
+) -> Vec<PathBuf> {
+    let Some(home) = cache_home() else {
+        return fontconfig_paths(family);
+    };
+    let stamps = [
+        modified(&home.join("fontconfig")),
+        modified(Path::new("/var/cache/fontconfig")),
+    ];
+    let key = cache_key(config_path, env_path, family, &stamps);
+    cached_paths(&home.join("hyprburst").join("fonts"), &key, || {
+        fontconfig_paths(family)
+    })
+}
+
+/// fontconfig-derived paths, most specific first: the configured family, then
+/// the default monospace / any Nerd Font.
+fn fontconfig_paths(family: Option<&str>) -> Vec<PathBuf> {
+    family
         .filter(|f| !f.is_empty())
         .and_then(fc_match_family)
         .into_iter()
-        .collect();
-    collect_candidates(
-        config_path,
-        env_path.as_deref(),
-        family_paths,
-        fc_font_candidates()
-            .into_iter()
-            .chain(FALLBACK_PATHS.iter().map(PathBuf::from)),
-    )
+        .chain(fc_font_candidates())
+        .collect()
 }
 
 fn collect_candidates(
@@ -432,6 +578,162 @@ mod tests {
             fonts.glyph_font('\u{f269}').unwrap(),
             &fonts.primary
         ));
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/fonts")
+            .join(name)
+    }
+
+    #[test]
+    fn has_icons_detects_the_nerd_font_probe_glyph() {
+        let fonts = fixture_fonts();
+        assert!(!has_icons(&fonts.primary));
+        assert!(has_icons(&fonts.fallbacks[0]));
+    }
+
+    #[test]
+    fn configured_icon_font_skips_fontconfig() {
+        for (config, env) in [
+            (Some(fixture("icons.ttf")), None),
+            (None, Some(fixture("icons.ttf"))),
+        ] {
+            let fonts = resolve_with(
+                config.as_deref().and_then(|p| p.to_str()),
+                env.as_deref().and_then(|p| p.to_str()),
+                &[fixture("primary.ttf")],
+                || panic!("fontconfig must not be consulted"),
+            )
+            .unwrap();
+            assert!(has_icons(&fonts.primary));
+            assert_eq!(fonts.fallbacks.len(), 1);
+            assert_ne!(fonts.fallbacks[0].glyph_id('M').0, 0);
+        }
+    }
+
+    #[test]
+    fn configured_text_font_still_gets_fontconfig_icons() {
+        let mut called = false;
+        let fonts = resolve_with(fixture("primary.ttf").to_str(), None, &[], || {
+            called = true;
+            vec![fixture("icons.ttf")]
+        })
+        .unwrap();
+        assert!(called);
+        assert!(!has_icons(&fonts.primary));
+        assert!(has_icons(&fonts.fallbacks[0]));
+    }
+
+    #[test]
+    fn unparseable_or_missing_config_falls_through_to_fontconfig() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        for config in [manifest.to_str(), None] {
+            let mut called = false;
+            let fonts = resolve_with(config, None, &[fixture("icons.ttf")], || {
+                called = true;
+                vec![fixture("primary.ttf")]
+            })
+            .unwrap();
+            assert!(called);
+            assert_ne!(fonts.primary.glyph_id('M').0, 0);
+            assert!(!has_icons(&fonts.primary));
+            assert_eq!(fonts.fallbacks.len(), 1);
+        }
+    }
+
+    fn cache_file(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hyprburst-font-cache-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("hyprburst").join("fonts")
+    }
+
+    #[test]
+    fn cache_miss_runs_lookup_and_a_hit_reuses_it() {
+        let file = cache_file("hit");
+        let fonts = vec![fixture("icons.ttf"), fixture("primary.ttf")];
+        let mut calls = 0;
+        assert_eq!(
+            cached_paths(&file, "k", || {
+                calls += 1;
+                fonts.clone()
+            }),
+            fonts
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(
+            cached_paths(&file, "k", || panic!("cache hit must not look up")),
+            fonts
+        );
+    }
+
+    #[test]
+    fn changed_key_reruns_lookup() {
+        let file = cache_file("key");
+        cached_paths(&file, "old", || vec![fixture("icons.ttf")]);
+        assert_eq!(
+            cached_paths(&file, "new", || vec![fixture("primary.ttf")]),
+            vec![fixture("primary.ttf")]
+        );
+        assert_eq!(
+            cached_paths(&file, "new", || panic!("rewritten cache must hit")),
+            vec![fixture("primary.ttf")]
+        );
+    }
+
+    #[test]
+    fn vanished_cached_font_reruns_lookup() {
+        let file = cache_file("gone");
+        let gone = file.with_file_name("gone.ttf");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&gone, b"x").unwrap();
+        cached_paths(&file, "k", || vec![gone.clone()]);
+        std::fs::remove_file(&gone).unwrap();
+        let mut called = false;
+        cached_paths(&file, "k", || {
+            called = true;
+            vec![fixture("icons.ttf")]
+        });
+        assert!(called);
+    }
+
+    #[test]
+    fn empty_or_corrupt_cache_reruns_lookup() {
+        for contents in ["", "not the key\n/some/font.ttf\n"] {
+            let file = cache_file("corrupt");
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, contents).unwrap();
+            let mut called = false;
+            cached_paths(&file, "k", || {
+                called = true;
+                Vec::new()
+            });
+            assert!(called, "{contents:?}");
+        }
+    }
+
+    #[test]
+    fn cache_key_tracks_every_input_on_one_line() {
+        let t = Some(SystemTime::UNIX_EPOCH);
+        let later = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1));
+        let base = cache_key(Some("/c.ttf"), Some("/e.ttf"), Some("Mono"), &[t, None]);
+        for other in [
+            cache_key(None, Some("/e.ttf"), Some("Mono"), &[t, None]),
+            cache_key(Some("/c.ttf"), None, Some("Mono"), &[t, None]),
+            cache_key(Some("/c.ttf"), Some("/e.ttf"), Some("Sans"), &[t, None]),
+            cache_key(Some("/c.ttf"), Some("/e.ttf"), Some("Mono"), &[later, None]),
+            cache_key(Some("/c.ttf"), Some("/e.ttf"), Some("Mono"), &[t, t]),
+        ] {
+            assert_ne!(base, other);
+        }
+        assert_eq!(
+            base,
+            cache_key(Some("/c.ttf"), Some("/e.ttf"), Some("Mono"), &[t, None])
+        );
+        assert!(!cache_key(Some("a\nb"), None, None, &[]).contains('\n'));
     }
 
     #[test]
