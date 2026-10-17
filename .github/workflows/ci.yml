@@ -31,3 +31,14 @@ jobs:
 
       - name: Tests
         run: cargo test --all-targets
+
+      # The opt-in profiling build (docs/hotpath-profiling.md) must keep
+      # compiling, and its report must keep naming every instrumented phase.
+      - name: Clippy (hotpath-alloc)
+        run: cargo clippy --all-targets --features hotpath-alloc -- -D warnings
+
+      - name: Tests (hotpath)
+        run: cargo test --all-targets --features hotpath
+
+      - name: Tests (hotpath-alloc)
+        run: cargo test --all-targets --features hotpath-alloc

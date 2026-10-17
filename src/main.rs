@@ -1,4 +1,6 @@
 use std::io;
+#[cfg(any(test, feature = "hotpath"))]
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -100,9 +102,44 @@ fn tui_config(mut config: Config, gpu_host: bool) -> Config {
     config
 }
 
+/// Where the Rio child (`tui --gpu-host`) writes its hotpath report: next to
+/// the parent's `HOTPATH_OUTPUT_PATH` with a `-tui-<pid>` suffix, or a temp
+/// file. The child's stdout is the parent's PTY, so hotpath's default stdout
+/// report would be painted into the launcher and lost.
+#[cfg(any(test, feature = "hotpath"))]
+fn child_report_path(parent: Option<&Path>, pid: u32) -> PathBuf {
+    let Some(parent) = parent else {
+        return std::env::temp_dir().join(format!("hyprburst-hotpath-tui-{pid}.txt"));
+    };
+    let stem = parent.file_stem().unwrap_or_default().to_string_lossy();
+    let name = match parent.extension() {
+        Some(ext) => format!("{stem}-tui-{pid}.{}", ext.to_string_lossy()),
+        None => format!("{stem}-tui-{pid}"),
+    };
+    parent.with_file_name(name)
+}
+
+/// Point the Rio child's hotpath report at its own file and keep its metrics
+/// server (and the "port busy" notice it prints) off the parent's PTY.
+#[cfg(feature = "hotpath")]
+fn redirect_child_report() {
+    let parent = std::env::var_os("HOTPATH_OUTPUT_PATH").map(PathBuf::from);
+    let path = child_report_path(parent.as_deref(), std::process::id());
+    // SAFETY: called first thing in `main`, before any thread is spawned, so
+    // nothing can read the environment concurrently.
+    unsafe {
+        std::env::set_var("HOTPATH_OUTPUT_PATH", path);
+        std::env::set_var("HOTPATH_METRICS_SERVER_OFF", "1");
+    }
+}
+
 /// Run the crossterm TUI inline in the current terminal — the fallback for
 /// SSH / no-GPU sessions where the windowed launcher can't open.
+///
+/// Built with `--features hotpath` this is the profiling scope for the TUI and
+/// the Rio child; see docs/hotpath-profiling.md.
 fn run_tui(gpu_host: bool) -> io::Result<()> {
+    let _profile = profile_scope("hyprburst::tui");
     let config = tui_config(load_config(), gpu_host);
     let mut terminal = terminal::init()?;
     let original_hook = std::panic::take_hook();
@@ -148,7 +185,7 @@ fn run_window(measure: bool, start: Instant) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    match window::run(config, measure, start) {
+    match open_native(config, measure, start) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("hyprburst: {}", err);
@@ -157,13 +194,50 @@ fn run_window(measure: bool, start: Instant) -> ExitCode {
     }
 }
 
+/// The native window's profiling scope. Kept after the Hyprland hand-off so a
+/// dispatching parent never writes a report of its own.
+fn open_native(
+    config: Config,
+    measure: bool,
+    start: Instant,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _profile = profile_scope("hyprburst::native");
+    window::run(config, measure, start)
+}
+
+/// The Rio window's profiling scope (the parent half; the child profiles
+/// itself in [`run_tui`]).
+fn open_rio(
+    config: Config,
+    measure: bool,
+    start: Instant,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let _profile = profile_scope("hyprburst::rio");
+    window::run_rio(config, measure, start)
+}
+
+// `#[hotpath::main]` would install this per annotated function; the binary
+// has three profiling scopes, so it is declared once here instead.
+#[cfg(feature = "hotpath-alloc")]
+#[global_allocator]
+static ALLOCATOR: hotpath::CountingAllocator = hotpath::CountingAllocator::new();
+
+/// Start a hotpath profiling scope: the report is written when the returned
+/// guard drops (or after `HOTPATH_SHUTDOWN_MS`). A no-op without the
+/// `hotpath` feature.
+fn profile_scope(caller: &'static str) -> hotpath::HotpathGuard {
+    hotpath::HotpathGuardBuilder::new(caller)
+        .percentiles(&[50.0, 95.0, 99.0])
+        .build()
+}
+
 fn run_rio(measure: bool, start: Instant) -> ExitCode {
     let config = load_config();
     if !measure && hyprland::dispatch_configured_launcher(&config) {
         return ExitCode::SUCCESS;
     }
 
-    match window::run_rio(config, measure, start) {
+    match open_rio(config, measure, start) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("hyprburst: {err}");
@@ -180,7 +254,13 @@ fn main() -> ExitCode {
         Command::BenchStartup => io_to_exit(bench_startup()),
         Command::Rio { measure } => run_rio(measure, start),
         Command::Native { measure } => run_window(measure, start),
-        Command::Tui { gpu_host } => io_to_exit(run_tui(gpu_host)),
+        Command::Tui { gpu_host } => {
+            #[cfg(feature = "hotpath")]
+            if gpu_host {
+                redirect_child_report();
+            }
+            io_to_exit(run_tui(gpu_host))
+        }
         Command::Help => {
             print!("{}", HELP);
             ExitCode::SUCCESS
@@ -244,6 +324,22 @@ mod tests {
         expected.colors.foreground = ratatui::style::Color::Reset;
         expected.colors.background = ratatui::style::Color::Reset;
         assert_eq!(tui_config(config, true), expected);
+    }
+
+    #[test]
+    fn rio_child_report_sits_next_to_the_parent_report() {
+        assert_eq!(
+            child_report_path(Some(Path::new("/tmp/hb.json")), 42),
+            PathBuf::from("/tmp/hb-tui-42.json")
+        );
+        assert_eq!(
+            child_report_path(Some(Path::new("/tmp/hb")), 42),
+            PathBuf::from("/tmp/hb-tui-42")
+        );
+        assert_eq!(
+            child_report_path(None, 42),
+            std::env::temp_dir().join("hyprburst-hotpath-tui-42.txt")
+        );
     }
 
     #[test]

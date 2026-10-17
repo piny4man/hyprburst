@@ -121,6 +121,7 @@ fn fuzzy_match(query: &str, target: &str) -> Option<u32> {
 /// pairs indexing back into `apps` — sorted best-first — so callers never have
 /// to recover positions (no pointer-identity rescans). Allocation per call: one
 /// lowercase of the query plus the results vector.
+#[hotpath::measure]
 pub fn filter_and_rank(
     query: &str,
     apps: &[crate::domain::desktop::DesktopEntry],

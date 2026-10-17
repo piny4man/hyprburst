@@ -405,6 +405,8 @@ CI asserts the same path stays under a **250ms ceiling** via `tests/bench_startu
 
 Compare first presentation with `hyprburst --measure` (Rio default) and `hyprburst native --measure` (direct fallback). Reference results are recorded in [Rio Prototype Findings](docs/rio-prototype.md).
 
+For where the time goes, build with the opt-in `hotpath` / `hotpath-alloc` features and run with `HYPRBURST_PERF=1` for open, query, and selection latency; see [Profiling with hotpath](docs/hotpath-profiling.md) and the [findings](docs/hotpath-findings.md).
+
 ## Troubleshooting
 
 **Icons look generic.** Both GPU frontends use a four-tile app symbol when no resolved font provides the requested icon. Install a [Nerd Font](https://www.nerdfonts.com/) such as `JetBrainsMono Nerd Font` and reopen hyprburst to get application-specific icons; your configured text family can stay unchanged. Set `ui.show_icons = false` to hide icons entirely. If **icons show as tofu squares (□)** in `hyprburst tui`, configure a Nerd Font or font fallback in the hosting terminal; a shared theme family does not control its font.

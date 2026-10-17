@@ -24,6 +24,7 @@ include = [
   "packaging/hyprburst.lua",
   "src/**",
   "tests/**",
+  "examples/**",
 ]
 
 [dependencies]
@@ -50,6 +51,16 @@ glutin-winit = "0.5"
 glow = "0.16"
 ab_glyph = "0.2"
 raw-window-handle = "0.6"
+# Profiling instrumentation. Every macro is a no-op and none of hotpath's own
+# dependencies are compiled unless the `hotpath` feature below is enabled.
+hotpath = { version = "0.28", default-features = false }
+
+[features]
+# Opt-in profiling: `cargo build --release --features hotpath[,hotpath-alloc]`
+# writes a timing (and allocation) report when the launcher exits. See
+# docs/hotpath-profiling.md.
+hotpath = ["hotpath/hotpath", "hotpath/threads"]
+hotpath-alloc = ["hotpath", "hotpath/hotpath-alloc"]
 
 [profile.release]
 opt-level = 3

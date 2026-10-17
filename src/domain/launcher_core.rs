@@ -79,6 +79,7 @@ pub struct LauncherCore {
 impl LauncherCore {
     /// Construct from config: discover apps, load history/scores, and build the
     /// initial filtered list.
+    #[hotpath::measure(impl_type = "LauncherCore")]
     pub fn new(config: Config) -> Self {
         let apps = discover_apps();
         let running = !apps.is_empty();
@@ -151,6 +152,7 @@ impl LauncherCore {
 
     /// Apply an abstract action to the state machine. No-op once the launcher
     /// has stopped running.
+    #[hotpath::measure(impl_type = "LauncherCore")]
     pub fn apply(&mut self, action: LauncherAction) {
         if !self.running {
             return;
@@ -183,6 +185,7 @@ impl LauncherCore {
     }
 
     /// Build a read-only view of the current state for rendering.
+    #[hotpath::measure(impl_type = "LauncherCore")]
     pub fn view(&self) -> LauncherView<'_> {
         let empty_reason = if self.filtered.is_empty() {
             Some(if self.query.is_empty() {
@@ -216,6 +219,7 @@ impl LauncherCore {
         }
     }
 
+    #[hotpath::measure(impl_type = "LauncherCore")]
     fn rebuild_filtered(&mut self) {
         // filter_and_rank returns (index, score) pairs directly — no recovery
         // scan, no pointer-identity unwrap.
@@ -233,6 +237,7 @@ impl LauncherCore {
         self.rebuild_filtered();
     }
 
+    #[hotpath::measure(impl_type = "LauncherCore")]
     fn move_vertical(&mut self, dr: i32) {
         if self.filtered.is_empty() {
             return;
@@ -247,6 +252,7 @@ impl LauncherCore {
         self.selected_index = (new_row * cols + col) as usize;
     }
 
+    #[hotpath::measure(impl_type = "LauncherCore")]
     fn move_horizontal(&mut self, dc: i32) {
         if self.filtered.is_empty() || self.columns <= 1 {
             return;
@@ -294,6 +300,7 @@ impl LauncherCore {
     }
 }
 
+#[hotpath::measure]
 fn load_scores(history: &History) -> HashMap<String, f64> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

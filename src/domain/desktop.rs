@@ -216,6 +216,7 @@ fn push_spaced(out: &mut String, value: &str) {
     out.push_str(value);
 }
 
+#[hotpath::measure]
 pub fn discover_apps() -> Vec<DesktopEntry> {
     discover_in(&data_dirs())
 }

@@ -20,6 +20,7 @@ pub struct History {
 
 #[allow(dead_code)]
 impl History {
+    #[hotpath::measure(impl_type = "History")]
     pub fn open() -> rusqlite::Result<Self> {
         let path = default_db_path();
         if let Some(parent) = path.parent() {
