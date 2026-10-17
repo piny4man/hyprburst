@@ -155,6 +155,9 @@ separately.
 
 ### 5. The probe folds no-op keys into the next change on Rio
 
+**Fixed in [NUKE-114](https://linear.app/tiendacables/issue/NUKE-114); see
+[After NUKE-114](#after-nuke-114--2026-10-17).**
+
 7 of 254 Rio input samples are 110–643 ms, each about one pause between key
 presses. A key that changes nothing on screen (e.g. `Up` on the first row,
 `Backspace` on an empty query) produces no damage, so the pending sample is
@@ -356,6 +359,66 @@ What remains:
   EGL config selection) is now the critical path for both frontends.
 - No follow-up issue is proposed for Rio: the done-when target is met.
 
+## After NUKE-114 — 2026-10-17
+
+Branch `perf/probe-noop-keys` (on `c777c0a`, which includes NUKE-113). The
+input probe now uses one rule for both frontends:
+
+- Only a frame with a visible change answers an input. Rio already had this
+  through its damage gate. Native now compares each frame's cells with the
+  previous frame's (`LastFrame` in `src/gpu/window.rs`, only while
+  `HYPRBURST_PERF` is on), so a key that repaints the same picture no longer
+  closes a sample.
+- A pending input expires when the next key arrives more than 50 ms later
+  (`INPUT_EXPIRY` in `src/perf.rs`). It is printed as
+  `query-input-unanswered` or `selection-input-unanswered` with its age, and
+  the new key starts its own sample. Keys within 50 ms still fold, so bursts
+  are measured from their first key.
+
+The finding proposed dropping a sample "after one refresh with no damage".
+That can't work on Rio: a no-op key makes the child send no PTY bytes, so the
+parent gets no wake and no frame to time out on. The next key is the first
+event that follows, so the rule is checked there.
+
+One correction to finding 5: `Up` on the first row is not a no-op. Selection
+wraps to the last row, so it changes the frame. `Backspace` on an empty query
+and `Down` with a single result are true no-ops.
+
+### Live sessions, performance (ms)
+
+Typed manually, same script each time (query edits, `Backspace` on an empty
+query, arrow keys, ~0.5–1 s pauses):
+
+| Build | Frontend | Metric | n | median | p95 | max |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| before (`c777c0a`) | rio | query | 13 | 0.70 | 759.96 | 759.96 |
+| before | rio | selection | 18 | 0.77 | 0.94 | 0.94 |
+| before | native | query | 12 | 0.27 | 0.79 | 0.79 |
+| before | native | selection | 14 | 0.28 | 0.35 | 0.35 |
+| after | rio | query | 46 | 0.73 | 1.00 | 1.33 |
+| after | rio | selection | 42 | 0.71 | 0.79 | 0.86 |
+| after | rio | query unanswered | 1 | 346.6 | — | — |
+| after | native | query | 16 | 0.34 | 0.52 | 0.52 |
+| after | native | selection | 32 | 0.34 | 0.47 | 0.48 |
+
+Before, one Rio query sample read 760 ms: a no-op `Backspace` answered by the
+next key's frame. After, no answered sample in either frontend exceeds
+1.4 ms; the no-op shows up as an unanswered line instead.
+
+A targeted round on the final build (`Backspace` ×3 on an empty query, `f`,
+`Backspace`, ~1 s apart) gives the same result in both frontends: three
+`query-input-unanswered` lines (0.4–1.5 s, one per no-op key) and two
+answered samples (Rio 0.81–0.90 ms, native 0.32–0.36 ms).
+
+**Done when met:** no Rio sample above ~20 ms comes from a no-op key, and
+`docs/hotpath-profiling.md` describes the rule. Rio medians are unchanged;
+native medians rise ~0.06 ms (0.27–0.28 → 0.34 ms), consistent with the
+probe-only cell comparison, which normal runs don't pay.
+
+Remaining limit: a no-op key followed by another key within 50 ms still
+folds, so that sample can read up to ~50 ms. Real input latency here is
+1–2 ms, so such a sample stands out.
+
 ## Follow-ups
 
 Filed as sub-issues of NUKE-109:
@@ -365,5 +428,5 @@ Filed as sub-issues of NUKE-109:
 | [NUKE-111](https://linear.app/tiendacables/issue/NUKE-111) Cache font resolution and skip the Nerd Font scan | 1 | — | fixed (see above) |
 | [NUKE-112](https://linear.app/tiendacables/issue/NUKE-112) Load fonts while the window and GL context are created | 2 | NUKE-111 | fixed (see above) |
 | [NUKE-113](https://linear.app/tiendacables/issue/NUKE-113) Rio: draw before the first input poll, spawn the child earlier | 3 | — | fixed (see above) |
-| [NUKE-114](https://linear.app/tiendacables/issue/NUKE-114) Probe: count no-op keys the same way in both frontends | 5 | — | open |
+| [NUKE-114](https://linear.app/tiendacables/issue/NUKE-114) Probe: count no-op keys the same way in both frontends | 5 | — | fixed (see above) |
 | [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | open: both frontends now open in ~40 ms, and the ≤ 10% ratio swings 1.5–20% between sessions |

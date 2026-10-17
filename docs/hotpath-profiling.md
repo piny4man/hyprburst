@@ -89,19 +89,27 @@ stderr line per sample, `hyprburst-perf <metric> <frontend> <ms>`, where
 | `first-content-present` | process start (`main`) | the first presented frame that draws any glyph |
 | `query-input-to-present` | a typed character, `Backspace`, or `Tab` | the first presented frame with a visible change |
 | `selection-input-to-present` | an arrow key or `PageUp`/`PageDown` | the first presented frame with a visible change |
+| `query-input-unanswered` | a query key that changed nothing on screen | the next key, more than 50 ms later |
+| `selection-input-unanswered` | a selection key that changed nothing on screen | the next key, more than 50 ms later |
 
 The Rio window presents its first frame before the PTY child has drawn
 anything, so for `rio` only `first-content-present` is when the launcher becomes
 visible; for `native` the two coincide. With the probe on, `--measure` stays
 open until content is presented.
 
-Keys pressed before that frame are folded into the first one, so a burst is
-measured from its first key. For the Rio frontend the change has to come back
-from the child over the PTY, so this includes the child's filtering and
-rendering, the PTY round trip, and the parent's VT parse and draw. A key that
-changes nothing on screen (e.g. `Down` with one result) is answered by the next
-visible change, so take the p95, not the max, as the figure of record. With the
-probe unset, nothing is recorded.
+Both frontends answer an input only with a frame whose cells differ from the
+last one: Rio through its damage gate, native by comparing the frame's cells
+with the previous frame's (only while the probe is on). Keys pressed within
+50 ms of a pending input are folded into it, so a burst (key repeat, fast
+typing) is measured from its first key. A key that comes later means the
+pending one changed nothing on screen (e.g. `Backspace` on an empty query,
+`Down` with one result): it is printed as `*-input-unanswered` with its age,
+not timed to the next key's frame, and the new key starts its own sample. A
+no-op key followed by another within 50 ms still folds, so such a sample can
+read up to ~50 ms. For the Rio frontend the change has to come back from the
+child over the PTY, so `*-input-to-present` includes the child's filtering
+and rendering, the PTY round trip, and the parent's VT parse and draw. With
+the probe unset, nothing is recorded.
 
 `scripts/perf-summary.sh` turns one or more logs into n / median / p95 / max
 per metric and frontend; other stderr lines are ignored.
