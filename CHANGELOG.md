@@ -5,6 +5,42 @@ All notable changes to Hyprburst are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-17
+
+### Added
+
+- Opt-in profiling. The `hotpath` and `hotpath-alloc` Cargo features
+  instrument the open, query, and render paths, and the default build pulls
+  in none of their dependencies. `HYPRBURST_PERF=1` prints open
+  (`first-present`, `first-content-present`) and query/selection
+  input-to-present samples to stderr. `scripts/perf-summary.sh` summarises
+  them, and `examples/query-cost.rs` measures query cost offscreen. See
+  `docs/hotpath-profiling.md`.
+
+### Changed
+
+- Opening is about twice as fast: content p95 is ~40 ms instead of 86 ms for
+  native and 115 ms for Rio (Ryzen 7 8845HS, performance profile).
+  - Font resolution skips fontconfig when `[font] path` or `$HYPRBURST_FONT`
+    already has Nerd Font icons. Otherwise it caches the answer in
+    `$XDG_CACHE_HOME/hyprburst/fonts` until the font settings or the
+    fontconfig cache change.
+  - Fonts and the native launcher core load on worker threads while the
+    window and GL context are created.
+  - The Rio child starts as soon as the window exists, overlapping GL setup,
+    and draws before it waits for input. Its content is now in the first
+    presented frame instead of ~30 ms after an empty one.
+
+### Fixed
+
+- The Rio frontend re-lays out the grid as soon as the window is resized,
+  instead of on the next key.
+- With `HYPRBURST_PERF` set, `--measure` no longer delays the Rio child's
+  first paint by ~70 ms; it reports after content is presented.
+- `HYPRBURST_PERF` no longer times a key that changed nothing (such as
+  `Backspace` on an empty query) to the next key's frame. It reports it as
+  `*-input-unanswered`, the same way in both frontends.
+
 ## [0.8.1] - 2026-09-13
 
 ### Added

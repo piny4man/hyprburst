@@ -146,6 +146,10 @@ bringing Rio content close to native.
 
 ### 4. Warm native opens miss the balanced target (+14.1% at p95)
 
+**Resolved in [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) by
+re-measuring after NUKE-111..114; see
+[After NUKE-115](#after-nuke-115--2026-10-17).**
+
 Back-to-back native opens in balanced have a long tail (p95 103.9 ms, max
 110 ms vs 91–92 ms in performance). The cold case and both Rio cases pass. The
 open path is dominated by findings 1 and 2, which are process spawns and driver
@@ -419,6 +423,42 @@ Remaining limit: a no-op key followed by another key within 50 ms still
 folds, so that sample can read up to ~50 ms. Real input latency here is
 1–2 ms, so such a sample stands out.
 
+## After NUKE-115 — 2026-10-17
+
+Re-measure of finding 4 on `main` (`d703172`, which includes NUKE-111..114),
+no code change. Earlier sessions of 30 opens swung the balanced/performance
+ratio from 1.5% to 20%, so this run uses 100 cold + 100 warm `--measure`
+opens per frontend and profile, one throwaway open first, performance and
+then balanced in one session.
+
+### First-content present (ms)
+
+| Open | Frontend | Perf median | Perf p95 | Bal median | Bal p95 | p95 Δ | Ratio | ≤ 10% |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
+| cold | native | 34.9 | 38.0 | 39.2 | 43.4 | +5.4 | +14.1% | fail |
+| warm | native | 36.5 | 46.4 | 39.0 | 50.6 | +4.2 | +9.0% | **pass** |
+| cold | rio | 36.5 | 39.4 | 41.1 | 44.9 | +5.6 | +14.1% | fail |
+| warm | rio | 37.9 | 45.1 | 41.0 | 50.1 | +5.0 | +11.0% | fail |
+
+Warm native in balanced, the case finding 4 was about, is now +9.0% above
+performance: **NUKE-115's done-when is met.** It was 103.9 ms p95 at the
+baseline and is 50.6 ms now. Its long tail came from the font lookup and GL
+setup that NUKE-111 and NUKE-112 removed or overlapped, as the finding
+expected.
+
+The other three cells miss the relative target by 1–4 points. In every cell
+the gap is 4–6 ms on a ~40 ms open, consistent with a lower clock slowing CPU
+and driver work this short. Five hotpath reports of a cold native open per
+profile show the same phases in both (`GlState::open_window` 20–23 ms,
+`GlState::new` 7.6–10.9 ms, content at 33.4–40.0 ms). At five samples the
+phase noise is larger than the gap, so hotpath cannot place it in one phase.
+
+A relative ≤ 10% target no longer separates a regression from clock speed
+at this size: a 4 ms gap is 10% of a 40 ms open. For future runs, an
+absolute bound (balanced p95 ≤ performance p95 + 10 ms) or a balanced p95
+budget (≤ 60 ms) would catch a real regression without flagging the clock
+ratio.
+
 ## Follow-ups
 
 Filed as sub-issues of NUKE-109:
@@ -429,4 +469,4 @@ Filed as sub-issues of NUKE-109:
 | [NUKE-112](https://linear.app/tiendacables/issue/NUKE-112) Load fonts while the window and GL context are created | 2 | NUKE-111 | fixed (see above) |
 | [NUKE-113](https://linear.app/tiendacables/issue/NUKE-113) Rio: draw before the first input poll, spawn the child earlier | 3 | — | fixed (see above) |
 | [NUKE-114](https://linear.app/tiendacables/issue/NUKE-114) Probe: count no-op keys the same way in both frontends | 5 | — | fixed (see above) |
-| [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | open: both frontends now open in ~40 ms, and the ≤ 10% ratio swings 1.5–20% between sessions |
+| [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | resolved: warm native +9.0% at n=100 (see above) |
