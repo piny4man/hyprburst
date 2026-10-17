@@ -116,6 +116,10 @@ in both profiles.
 
 ### 2. Fonts and GL context are set up one after the other (~29 ms)
 
+**Fixed in [NUKE-112](https://linear.app/tiendacables/issue/NUKE-112), widened
+to all pre-GL CPU work (fonts and the native `LauncherCore`); see
+[After NUKE-112](#after-nuke-112--2026-10-17).**
+
 `GlState::new` (EGL display, config, context, surface) takes ~29 ms, and runs
 after `resolve_fonts`. Neither needs the other until the cell renderer is
 built.
@@ -209,6 +213,69 @@ What remains, in order:
   in one balanced report (NUKE-112).
 - Rio content still arrives 31–35 ms after its blank frame (NUKE-113).
 
+## After NUKE-112 — 2026-10-17
+
+Branch `perf/overlap-startup` (on `ed14bcb`, which includes NUKE-111). Fonts
+(both frontends) and the native `LauncherCore` (app discovery, history,
+scores) are now built on worker threads, `hyprburst-fonts` and
+`hyprburst-core`, while the event loop, window and GL context are created.
+The fonts are joined in `GlState::new` just before the cell renderer needs
+them; the core in `resumed`, before the first paint. Rio's launcher core runs
+in the PTY child and is unchanged.
+
+After NUKE-111 the fonts cost only ~1.5 ms on a warm cache, so the scope was
+widened to include `LauncherCore::new` (~4 ms inline). Both now finish
+inside the ~30 ms of `GlState::new`; on the worker `LauncherCore::new` takes
+9–12 ms (it competes with the driver's GL setup) but is off the critical
+path.
+
+### Method: interleaved A/B
+
+Sequential runs of two builds drifted by several ms between sessions (a first
+sequential balanced run showed Rio 1–4 ms *slower*, which an interleaved run
+did not reproduce). The figures below therefore alternate a `main` build
+(`ed14bcb`) and this branch open by open: 30 cold + 30 warm opens of each per
+frontend and profile, in the same session.
+
+### First-content present, p95 (ms)
+
+| Open | Frontend | Perf main | Perf branch | Δ | Bal main | Bal branch | Δ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cold | native | 43.0 | 39.3 | −3.7 | 47.3 | 42.1 | −5.2 |
+| warm | native | 51.6 | 39.0 | −12.6 | 52.4 | 46.2 | −6.2 |
+| cold | rio | 74.9 | 73.4 | −1.6 | 78.1 | 77.1 | −1.0 |
+| warm | rio | 80.5 | 82.9 | +2.4 | 86.4 | 84.3 | −2.1 |
+
+Native is faster in every cell; native medians drop 5–9 ms. Rio, which gains
+only the ~1.5 ms font load, is within noise (warm performance medians 75.3 vs
+75.1 ms).
+
+With an empty font cache (no `[font] path`, first open after fonts change),
+the 73–78 ms fontconfig lookup now overlaps GL setup: native content arrives
+at 83–85 ms in performance (was 113–116 ms) and 89–90 ms in balanced.
+
+### Balanced vs performance (target ≤ 10%)
+
+| Open | Frontend | Sequential run | A/B run, branch | A/B run, main |
+| --- | --- | ---: | ---: | ---: |
+| cold | native | +14.8% | +7.3% | +10.1% |
+| warm | native | +8.4% | +18.4% | +1.5% |
+| cold | rio | +6.4% | +5.1% | +4.3% |
+| warm | rio | +5.9% | +1.7% | +7.3% |
+
+Rio passes throughout. For native, the ratio swings by ~8 points between
+sessions of the same build: the profile gap is 3–7 ms on a ~40 ms open, so a
+few ms of p95 tail decide the verdict. Each native session misses the target
+in one cell. Finding 4 (NUKE-115) is not settled by this: absolute balanced
+native opens are faster than ever (42–47 ms p95), but a relative ≤ 10% target
+at this size needs more samples, or an absolute threshold, to be meaningful.
+
+What remains:
+
+- `GlState::new` (28–34 ms) is the native open's critical path; the work
+  overlapped here finishes inside it.
+- Rio content still arrives ~30 ms after its blank frame (NUKE-113).
+
 ## Follow-ups
 
 Filed as sub-issues of NUKE-109:
@@ -216,7 +283,7 @@ Filed as sub-issues of NUKE-109:
 | Issue | Finding | Blocked by | Status |
 | --- | --- | --- | --- |
 | [NUKE-111](https://linear.app/tiendacables/issue/NUKE-111) Cache font resolution and skip the Nerd Font scan | 1 | — | fixed (see above) |
-| [NUKE-112](https://linear.app/tiendacables/issue/NUKE-112) Load fonts while the window and GL context are created | 2 | NUKE-111 | open |
+| [NUKE-112](https://linear.app/tiendacables/issue/NUKE-112) Load fonts while the window and GL context are created | 2 | NUKE-111 | fixed (see above) |
 | [NUKE-113](https://linear.app/tiendacables/issue/NUKE-113) Rio: draw before the first input poll, spawn the child earlier | 3 | — | open |
 | [NUKE-114](https://linear.app/tiendacables/issue/NUKE-114) Probe: count no-op keys the same way in both frontends | 5 | — | open |
-| [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | passes after NUKE-111; confirm after NUKE-112 |
+| [NUKE-115](https://linear.app/tiendacables/issue/NUKE-115) Re-measure warm native open in balanced | 4 | NUKE-111, NUKE-112 | open: native opens faster, but the ≤ 10% ratio swings 1.5–18% between sessions |

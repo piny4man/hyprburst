@@ -53,6 +53,7 @@ use crate::gpu::grid::{
     grid_size,
 };
 use crate::gpu::rio::{KeyInput, Session};
+use crate::gpu::startup::Pending;
 use crate::perf::{self, InputKind, InputProbe, OpenProbe};
 use crate::view::layout::entry_at;
 use crate::view::render::{RenderCache, render_core};
@@ -73,6 +74,11 @@ static MEASURE: AtomicBool = AtomicBool::new(false);
 /// reference instant (captured in `main` before any work) so the cold-start
 /// report measures time-to-first-frame honestly. With `measure` the process
 /// exits right after the first present, printing the cold-start / RSS report.
+///
+/// Fonts and the [`LauncherCore`] (app discovery, history) are built on worker
+/// threads while the event loop, window and GL context are created; the fonts
+/// are joined in [`GlState::new`] and the core in `resumed`, before the first
+/// paint.
 pub fn run(
     config: Config,
     measure: bool,
@@ -81,20 +87,38 @@ pub fn run(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = resolve_fonts(config.font.path.as_deref(), config.font.family.as_deref())
-        .ok_or("no monospace font found; set [font] path or $HYPRBURST_FONT to a .ttf/.otf path")?;
-
+    let font = spawn_fonts(&config);
+    let core = {
+        let config = config.clone();
+        Pending::spawn("hyprburst-core", move || {
+            Ok(Box::new(LauncherCore::new(config)))
+        })
+    };
     let event_loop = EventLoop::<()>::with_user_event().build().map_err(|err| {
         format!("cannot create event loop ({err}) — is a Wayland display available?")
     })?;
 
-    let mut app = App::new(start, font, config);
+    let mut app = App::new(start, font, core, config);
     event_loop.run_app(&mut app)?;
-    Ok(())
+    app.finish()
+}
+
+/// Resolve and load the fonts on a worker; [`GlState::new`] joins them once the
+/// window and GL context exist.
+fn spawn_fonts(config: &Config) -> Pending<FontSet> {
+    let path = config.font.path.clone();
+    let family = config.font.family.clone();
+    Pending::spawn("hyprburst-fonts", move || {
+        resolve_fonts(path.as_deref(), family.as_deref()).ok_or_else(|| {
+            "no monospace font found; set [font] path or $HYPRBURST_FONT to a .ttf/.otf path"
+                .to_owned()
+        })
+    })
 }
 
 /// Open the default Rio-backed frontend. Rio owns the PTY and VT grid while the
-/// existing OpenGL renderer keeps ownership of the native window.
+/// existing OpenGL renderer keeps ownership of the native window. Fonts load on
+/// a worker thread while the window and GL context are created, as in [`run`].
 pub fn run_rio(
     config: Config,
     measure: bool,
@@ -103,8 +127,7 @@ pub fn run_rio(
     MEASURE.store(measure, Ordering::SeqCst);
     FIRST_PRESENT_NS.store(0, Ordering::SeqCst);
 
-    let font = resolve_fonts(config.font.path.as_deref(), config.font.family.as_deref())
-        .ok_or("no monospace font found; set [font] path or $HYPRBURST_FONT to a .ttf/.otf path")?;
+    let font = spawn_fonts(&config);
     let executable = std::env::current_exe()?;
     let event_loop = EventLoop::<()>::with_user_event().build().map_err(|err| {
         format!("cannot create event loop ({err}) — is a Wayland display available?")
@@ -115,11 +138,12 @@ pub fn run_rio(
     });
     let mut app = App::new_rio(start, font, config, executable, wake);
     event_loop.run_app(&mut app)?;
-    Ok(())
+    app.finish()
 }
 
 enum Frontend {
-    Launcher(Box<LauncherCore>),
+    /// Built on a worker; joined in `resumed` once the window and GL exist.
+    Launcher(Pending<Box<LauncherCore>>),
     Rio {
         session: Option<Session>,
         executable: PathBuf,
@@ -132,7 +156,10 @@ enum Frontend {
 /// mutation happens on the main thread.
 struct App {
     start: Instant,
-    font: FontSet,
+    /// Loading on a worker until [`GlState::new`] joins it.
+    font: Pending<FontSet>,
+    /// A startup failure (no font, launcher setup) for [`run`] to return.
+    startup_error: Option<String>,
     frontend: Frontend,
     gl: Option<GlState>,
     /// Pixel size of one monospace cell, derived from the font + DPI once the
@@ -181,14 +208,18 @@ struct App {
 }
 
 impl App {
-    fn new(start: Instant, font: FontSet, config: Config) -> Self {
-        let frontend = Frontend::Launcher(Box::new(LauncherCore::new(config.clone())));
-        Self::with_frontend(start, font, config, frontend)
+    fn new(
+        start: Instant,
+        font: Pending<FontSet>,
+        core: Pending<Box<LauncherCore>>,
+        config: Config,
+    ) -> Self {
+        Self::with_frontend(start, font, config, Frontend::Launcher(core))
     }
 
     fn new_rio(
         start: Instant,
-        font: FontSet,
+        font: Pending<FontSet>,
         config: Config,
         executable: PathBuf,
         wake: Arc<dyn Fn() + Send + Sync>,
@@ -201,7 +232,20 @@ impl App {
         Self::with_frontend(start, font, config, frontend)
     }
 
-    fn with_frontend(start: Instant, font: FontSet, config: Config, frontend: Frontend) -> Self {
+    /// The run's outcome once the event loop has returned.
+    fn finish(self) -> Result<(), Box<dyn std::error::Error>> {
+        match self.startup_error {
+            Some(err) => Err(err.into()),
+            None => Ok(()),
+        }
+    }
+
+    fn with_frontend(
+        start: Instant,
+        font: Pending<FontSet>,
+        config: Config,
+        frontend: Frontend,
+    ) -> Self {
         let fg = rgb_norm(color_rgb(config.colors.foreground));
         let (br, bg_, bb) = color_rgb(config.colors.background);
         let bg_norm = [br as f32 / 255.0, bg_ as f32 / 255.0, bb as f32 / 255.0];
@@ -223,6 +267,7 @@ impl App {
         Self {
             start,
             font,
+            startup_error: None,
             app_id: config.window.app_id.clone(),
             win_w: config.window.width,
             win_h: config.window.height,
@@ -292,10 +337,13 @@ impl ApplicationHandler<()> for App {
             .with_inner_size(winit::dpi::LogicalSize::new(self.win_w, self.win_h))
             .with_transparent(self.transparent);
 
-        let gl = match GlState::new(event_loop, window_attributes, &self.font, self.font_px) {
+        let gl = match GlState::new(event_loop, window_attributes, &mut self.font, self.font_px) {
             Ok(gl) => gl,
             Err(err) => {
-                eprintln!("hyprburst: GL bootstrap failed: {err}");
+                match self.font.failed() {
+                    Some(font_err) => self.startup_error = Some(font_err.to_owned()),
+                    None => eprintln!("hyprburst: GL bootstrap failed: {err}"),
+                }
                 event_loop.exit();
                 return;
             }
@@ -308,7 +356,14 @@ impl ApplicationHandler<()> for App {
         self.repaint_needed = true;
 
         match &mut self.frontend {
-            Frontend::Launcher(_) => gl.window.request_redraw(),
+            Frontend::Launcher(core) => {
+                if let Err(err) = core.get() {
+                    self.startup_error = Some(err);
+                    event_loop.exit();
+                    return;
+                }
+                gl.window.request_redraw();
+            }
             Frontend::Rio {
                 session,
                 executable,
@@ -360,6 +415,9 @@ impl ApplicationHandler<()> for App {
                 if event.state == ElementState::Pressed {
                     match &mut self.frontend {
                         Frontend::Launcher(core) => {
+                            let Some(core) = core.ready_mut() else {
+                                return;
+                            };
                             if let Some(action) = key_to_action(&event) {
                                 if let (Some(probe), Some(kind)) =
                                     (&mut self.perf, InputKind::of_action(action))
@@ -417,6 +475,9 @@ impl ApplicationHandler<()> for App {
 
                 match &mut self.frontend {
                     Frontend::Launcher(core) => {
+                        let Some(core) = core.ready_mut() else {
+                            return;
+                        };
                         let area = Rect::new(0, 0, self.grid.0, self.grid.1);
                         let entry_count = core.view().entries.len();
                         if let Some(index) = entry_at(area, core.config(), cell, entry_count) {
@@ -442,7 +503,7 @@ impl ApplicationHandler<()> for App {
                     event_loop.exit();
                     return;
                 }
-                let Some(gl) = &mut self.gl else {
+                let (Some(gl), Some(font)) = (&mut self.gl, self.font.ready()) else {
                     return;
                 };
 
@@ -461,6 +522,9 @@ impl ApplicationHandler<()> for App {
                 let mut visible_change = true;
                 match &mut self.frontend {
                     Frontend::Launcher(core) => {
+                        let Some(core) = core.ready_mut() else {
+                            return;
+                        };
                         build_cells(
                             core,
                             &mut self.render_cache,
@@ -506,7 +570,7 @@ impl ApplicationHandler<()> for App {
                     let size = gl.window.inner_size();
                     gl.renderer.draw(
                         &gl.gl,
-                        &self.font,
+                        font,
                         size.width,
                         size.height,
                         &self.bgs,
@@ -702,7 +766,7 @@ impl GlState {
     fn new(
         event_loop: &ActiveEventLoop,
         window_attributes: WindowAttributes,
-        font: &FontSet,
+        font: &mut Pending<FontSet>,
         font_px: f32,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let template = ConfigTemplateBuilder::new()
@@ -741,7 +805,8 @@ impl GlState {
             glow::Context::from_loader_function_cstr(|s| gl_display.get_proc_address(s).cast())
         };
 
-        let fm = font_metrics(font, window.scale_factor(), font_px);
+        // The fonts load on a worker while the window and context are created.
+        let fm = font_metrics(font.get()?, window.scale_factor(), font_px);
         let renderer = unsafe { CellRenderer::new(&gl, &fm)? };
 
         Ok(Self {
