@@ -37,6 +37,14 @@ impl InputKind {
         }
     }
 
+    /// The metric name for an input that no visible change answered.
+    pub fn unanswered_metric(self) -> &'static str {
+        match self {
+            Self::Query => "query-input-unanswered",
+            Self::Selection => "selection-input-unanswered",
+        }
+    }
+
     /// Classify a launcher action. Launching, cancelling, and mouse selection
     /// close the window, so they have no presented frame to measure.
     pub fn of_action(action: LauncherAction) -> Option<Self> {
@@ -74,20 +82,37 @@ pub fn emit(metric: &str, frontend: &str, elapsed: Duration) {
     eprintln!("{}", line(metric, frontend, elapsed));
 }
 
+/// How long an input may go unanswered before the next input replaces it.
+pub const INPUT_EXPIRY: Duration = Duration::from_millis(50);
+
 /// Tracks the oldest input not yet shown on screen.
 ///
-/// Keys that arrive before the next presented change are folded into the
-/// first one, so a burst is measured from its first key — the latency the
-/// user waits for.
+/// Only a presented frame with a visible change answers an input. Keys that
+/// arrive within [`INPUT_EXPIRY`] of the pending one are folded into it, so a
+/// burst is measured from its first key — the latency the user waits for. A
+/// key that comes later replaces a pending input instead: that input changed
+/// nothing on screen, and is reported as unanswered rather than timed to the
+/// next key's frame.
 #[derive(Debug, Default)]
 pub struct InputProbe {
     pending: Option<(InputKind, Instant)>,
 }
 
 impl InputProbe {
-    /// Record an input at `at`.
-    pub fn input(&mut self, kind: InputKind, at: Instant) {
+    /// Record an input at `at`. A pending input older than [`INPUT_EXPIRY`]
+    /// changed nothing on screen (a no-op key); it is returned with its age
+    /// and this input starts a new sample, instead of being answered by this
+    /// input's frame.
+    pub fn input(&mut self, kind: InputKind, at: Instant) -> Option<(InputKind, Duration)> {
+        let expired = match self.pending {
+            Some((pending, since)) if at.saturating_duration_since(since) > INPUT_EXPIRY => {
+                self.pending = None;
+                Some((pending, at.saturating_duration_since(since)))
+            }
+            _ => None,
+        };
         self.pending.get_or_insert((kind, at));
+        expired
     }
 
     /// A frame showing a visible change was presented at `at`: return the
@@ -192,5 +217,59 @@ mod tests {
         );
         // Consumed: a later frame with no new input reports nothing.
         assert_eq!(probe.presented(t0 + Duration::from_millis(40)), None);
+    }
+
+    #[test]
+    fn an_unanswered_input_expires_when_the_next_one_comes_later() {
+        let t0 = Instant::now();
+        let mut probe = InputProbe::default();
+        assert_eq!(probe.input(InputKind::Query, t0), None);
+
+        // A no-op key: nothing is presented, and the next key comes 600 ms on.
+        let next = t0 + Duration::from_millis(600);
+        assert_eq!(
+            probe.input(InputKind::Selection, next),
+            Some((InputKind::Query, Duration::from_millis(600)))
+        );
+        // The new key is measured from its own press.
+        assert_eq!(
+            probe.presented(next + Duration::from_millis(1)),
+            Some((InputKind::Selection, Duration::from_millis(1)))
+        );
+    }
+
+    #[test]
+    fn keys_within_the_expiry_still_fold() {
+        let t0 = Instant::now();
+        let mut probe = InputProbe::default();
+        probe.input(InputKind::Query, t0);
+        assert_eq!(probe.input(InputKind::Query, t0 + INPUT_EXPIRY), None);
+        assert_eq!(
+            probe.presented(t0 + INPUT_EXPIRY + Duration::from_millis(2)),
+            Some((InputKind::Query, INPUT_EXPIRY + Duration::from_millis(2)))
+        );
+    }
+
+    #[test]
+    fn a_slow_frame_is_still_reported() {
+        let t0 = Instant::now();
+        let mut probe = InputProbe::default();
+        probe.input(InputKind::Query, t0);
+        assert_eq!(
+            probe.presented(t0 + Duration::from_millis(400)),
+            Some((InputKind::Query, Duration::from_millis(400)))
+        );
+    }
+
+    #[test]
+    fn unanswered_inputs_have_their_own_metric() {
+        assert_eq!(
+            InputKind::Query.unanswered_metric(),
+            "query-input-unanswered"
+        );
+        assert_eq!(
+            InputKind::Selection.unanswered_metric(),
+            "selection-input-unanswered"
+        );
     }
 }

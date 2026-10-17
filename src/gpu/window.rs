@@ -207,6 +207,8 @@ struct App {
     perf: Option<InputProbe>,
     /// `HYPRBURST_PERF` first-content probe; `None` when the probe is off.
     open_probe: Option<OpenProbe>,
+    /// The last native frame, for the input probe; `None` when it is off.
+    last_frame: Option<LastFrame>,
 }
 
 impl App {
@@ -288,6 +290,7 @@ impl App {
             render_cache: RenderCache::new(),
             perf: perf::enabled().then(InputProbe::default),
             open_probe: perf::enabled().then(OpenProbe::default),
+            last_frame: perf::enabled().then(LastFrame::default),
             frontend,
             gl: None,
             cell: CellMetrics::new(1, 1),
@@ -439,11 +442,11 @@ impl ApplicationHandler<()> for App {
                                 return;
                             };
                             if let Some(action) = key_to_action(&event) {
-                                if let (Some(probe), Some(kind)) =
-                                    (&mut self.perf, InputKind::of_action(action))
-                                {
-                                    probe.input(kind, Instant::now());
-                                }
+                                record_input(
+                                    &mut self.perf,
+                                    InputKind::of_action(action),
+                                    "native",
+                                );
                                 core.apply(action);
                                 self.repaint_needed = true;
                                 if !core.running() {
@@ -458,11 +461,7 @@ impl ApplicationHandler<()> for App {
                             ..
                         } => {
                             if let Some(key) = terminal_key(&event) {
-                                if let (Some(probe), Some(kind)) =
-                                    (&mut self.perf, key.input_kind())
-                                {
-                                    probe.input(kind, Instant::now());
-                                }
+                                record_input(&mut self.perf, key.input_kind(), "rio");
                                 session.send_key(key);
                             }
                         }
@@ -537,8 +536,9 @@ impl ApplicationHandler<()> for App {
                     return;
                 }
 
-                // Whether this frame shows new content (not just a fade step):
-                // only such a frame answers a pending input for the probe.
+                // Whether this frame shows new content (not just a fade step or
+                // a repaint of the same cells): only such a frame answers a
+                // pending input for the probe.
                 let mut visible_change = true;
                 match &mut self.frontend {
                     Frontend::Launcher(core) => {
@@ -554,6 +554,9 @@ impl ApplicationHandler<()> for App {
                             &mut self.bgs,
                             &mut self.glyphs,
                         );
+                        if let Some(last) = &mut self.last_frame {
+                            visible_change = last.changed(&self.bgs, &self.glyphs);
+                        }
                     }
                     Frontend::Rio {
                         session: Some(session),
@@ -1341,9 +1344,87 @@ fn fade_step(fade_start: &mut Option<Instant>, has_content: bool, now: Instant) 
     (1.0 - (1.0 - t).powi(4), t < 1.0)
 }
 
+/// Record a key for the input probe, reporting the input it replaces if that
+/// one changed nothing on screen.
+fn record_input(probe: &mut Option<InputProbe>, kind: Option<InputKind>, frontend: &str) {
+    if let (Some(probe), Some(kind)) = (probe, kind)
+        && let Some((unanswered, age)) = probe.input(kind, Instant::now())
+    {
+        perf::emit(unanswered.unanswered_metric(), frontend, age);
+    }
+}
+
+/// The last native frame's cells, so the `HYPRBURST_PERF` probe can tell a
+/// visible change from a repaint of the same picture (a key that changed
+/// nothing), as Rio's damage gate does.
+#[derive(Debug, Default)]
+struct LastFrame {
+    seen: bool,
+    bgs: Vec<BgCell>,
+    glyphs: Vec<CellInstance>,
+}
+
+impl LastFrame {
+    /// Whether this frame differs from the last one; a changed frame becomes
+    /// the new last one (reusing the buffers' capacity).
+    fn changed(&mut self, bgs: &[BgCell], glyphs: &[CellInstance]) -> bool {
+        let changed = !self.seen || self.bgs != bgs || self.glyphs != glyphs;
+        if changed {
+            self.seen = true;
+            self.bgs.clear();
+            self.bgs.extend_from_slice(bgs);
+            self.glyphs.clear();
+            self.glyphs.extend_from_slice(glyphs);
+        }
+        changed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn glyph(col: u16, ch: char) -> CellInstance {
+        CellInstance {
+            col,
+            row: 0,
+            ch,
+            bold: false,
+            color: [1.0; 3],
+        }
+    }
+
+    fn bar(row: u16) -> BgCell {
+        BgCell {
+            col: 0,
+            row,
+            color: [0.2, 0.2, 0.2, 1.0],
+        }
+    }
+
+    #[test]
+    fn the_first_frame_counts_as_a_change() {
+        assert!(LastFrame::default().changed(&[], &[]));
+    }
+
+    #[test]
+    fn repainting_the_same_cells_is_not_a_change() {
+        let mut last = LastFrame::default();
+        let glyphs = [glyph(0, '>'), glyph(2, 'f')];
+        assert!(last.changed(&[bar(1)], &glyphs));
+        assert!(!last.changed(&[bar(1)], &glyphs));
+    }
+
+    #[test]
+    fn a_moved_selection_or_new_glyph_is_a_change() {
+        let mut last = LastFrame::default();
+        let glyphs = [glyph(0, '>'), glyph(2, 'f')];
+        last.changed(&[bar(1)], &glyphs);
+        assert!(last.changed(&[bar(2)], &glyphs));
+        assert!(last.changed(&[bar(2)], &[glyph(0, '>'), glyph(2, 'i')]));
+        assert!(last.changed(&[bar(2)], &[glyph(0, '>')]));
+        assert!(!last.changed(&[bar(2)], &[glyph(0, '>')]));
+    }
 
     #[test]
     fn fade_waits_for_content_without_animating() {
